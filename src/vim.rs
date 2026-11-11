@@ -390,7 +390,7 @@ impl Editor {
                     return true;
                 }
                 // <leader><space>: project grep
-                "SPC SPC" => {
+                "SPC g" => {
                     self.vim_pending.clear();
                     self.project_grep_cmd();
                     return true;
