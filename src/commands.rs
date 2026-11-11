@@ -68,7 +68,7 @@ impl Editor {
     fn page(&self) -> usize {
         self.text_h.saturating_sub(2).max(1)
     }
-    fn scroll_up(&mut self) {
+    fn scroll_down(&mut self) {
         let page = self.page();
         let b = self.buf_mut();
         let last = b.lines.len() - 1;
@@ -81,7 +81,7 @@ impl Editor {
         b.cursor.line = (b.cursor.line + page).min(last);
         b.cursor.col = goal.min(b.line_len(b.cursor.line));
     }
-    fn scroll_down(&mut self) {
+    fn scroll_up(&mut self) {
         let page = self.page();
         let b = self.buf_mut();
         if b.cursor.line == 0 {

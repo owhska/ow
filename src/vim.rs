@@ -69,8 +69,8 @@ impl Editor {
                     self.say("g-");
                     return true;
                 }
-                "C-f" | "C-d" => { self.scroll_up(); return true; }
-                "C-b" | "C-u" => { self.scroll_down(); return true; }
+                "C-f" | "C-d" => { self.scroll_down(); return true; }
+                "C-b" | "C-u" => { self.scroll_up(); return true; }
                 "q" => {
                     let i = self.cur;
                     self.kill_buffer_idx(i);
