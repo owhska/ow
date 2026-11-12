@@ -5,27 +5,35 @@ impl Editor {
         if self.buf().kind == BufKind::Dired {
             let n = key.name.as_str();
             let meta = self.buf().meta.get(self.buf().cursor.line).cloned();
+            let is_entry = self.buf().cursor.line > 1;
             let cur_dir = self.dired_current_dir().unwrap_or_else(|| self.cwd.clone());
 
             // ---- gg sequence ----
             if self.vim_pending == "g" {
                 self.vim_pending.clear();
-                if n == "g" { self.bob(); }
+                if n == "g" {
+                    let last_line = self.buf().lines.len().saturating_sub(1);
+                    self.buf_mut().cursor = Pos::new(1.min(last_line), 2);
+                }
                 return true;
             }
 
             match n {
                 // --- File operations (differ from vim defaults) ---
                 "c" => {
-                    if let Some(LineMeta::Path(p)) = meta {
-                        self.copy_file(p);
-                        return true;
+                    if is_entry {
+                        if let Some(LineMeta::Path(p)) = meta.clone() {
+                            self.copy_file(p);
+                            return true;
+                        }
                     }
                 }
                 "x" => {
-                    if let Some(LineMeta::Path(p)) = meta {
-                        self.cut_file(p);
-                        return true;
+                    if is_entry {
+                        if let Some(LineMeta::Path(p)) = meta.clone() {
+                            self.cut_file(p);
+                            return true;
+                        }
                     }
                 }
                 "p" => {
@@ -37,19 +45,30 @@ impl Editor {
                     return true;
                 }
                 "d" => {
-                    if let Some(LineMeta::Path(p)) = meta {
-                        self.delete_file(p);
-                        return true;
+                    if is_entry {
+                        if let Some(LineMeta::Path(p)) = meta.clone() {
+                            self.delete_file(p);
+                            return true;
+                        }
                     }
                 }
                 "r" => {
-                    if let Some(LineMeta::Path(p)) = meta {
+                    if is_entry {
+                        if let Some(LineMeta::Path(p)) = meta.clone() {
                         let old_name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
                         let label = format!("Rename {} to: ", old_name);
-                        self.file_clipboard = Some(p);
-                        self.start_prompt(Prompt::new(&label, PKind::DiredCreate(cur_dir), None));
-                        return true;
+                            self.start_prompt(Prompt::new(
+                                &label,
+                                PKind::DiredRename { dir: cur_dir, source: p },
+                                None,
+                            ));
+                            return true;
+                        }
                     }
+                }
+                "R" => {
+                    self.dired_refresh();
+                    return true;
                 }
 
                 // --- Vim-style navigation ---
@@ -59,7 +78,7 @@ impl Editor {
                 "h" | "<left>" => {
                     // go up to parent directory
                     if let Some(parent) = cur_dir.parent().map(|p| p.to_path_buf()) {
-                        self.open_dir(&parent);
+                        self.open_dir_at(&parent, Some(&cur_dir));
                     }
                     return true;
                 }
@@ -79,7 +98,7 @@ impl Editor {
                 "n" => { self.next_line(); return true; }
 
                 // --- Let SPC leader and C-g through ---
-                "SPC" | "C-g" => { /* fall through to normal vim handling */ }
+                "SPC" | "C-g" => return false,
 
                 // --- Block everything else ---
                 _ => { return true; }
@@ -593,6 +612,13 @@ impl Editor {
         if n == "SPC" {
             self.vim_pending = "SPC".to_string();
             self.say("SPC -");
+            return true;
+        }
+
+        // First key of Vim's gg motion. The second 'g' is handled below.
+        if n == "g" && self.vim_pending.is_empty() {
+            self.vim_pending = "g".to_string();
+            self.say("g-");
             return true;
         }
 

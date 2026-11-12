@@ -5,6 +5,7 @@ use crate::keys::{self, Key};
 use crate::syntax::Highlighter;
 use ratatui::crossterm::event::KeyEvent;
 use std::collections::{HashMap, HashSet};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use unicode_width::UnicodeWidthChar;
@@ -27,6 +28,7 @@ pub enum PKind {
     TabWidth,
     SetLang,
     DiredCreate(PathBuf),
+    DiredRename { dir: PathBuf, source: PathBuf },
 }
 
 pub struct Prompt {
@@ -396,6 +398,7 @@ pub struct Editor {
     pub clip: Option<String>,
     pub last_clip: Option<String>,
     pub file_clipboard: Option<PathBuf>,
+    pub file_clipboard_cut: bool,
     pub arg_digits: bool,
     pub grep_fresh: bool,
     pub screen_w: u16,
@@ -463,6 +466,7 @@ impl Editor {
             clip: None,
             last_clip: None,
             file_clipboard: None,
+            file_clipboard_cut: false,
             arg_digits: false,
             grep_fresh: false,
             screen_w: 80,
@@ -724,51 +728,156 @@ impl Editor {
         }
     }
 
+    /// Open a directory in a Dired buffer. The current directory is stored in
+    /// Buffer::path; line metadata is reserved for the entries shown on screen.
     pub fn open_dir(&mut self, dir: &Path) {
-        let mut ents: Vec<(bool, String)> = std::fs::read_dir(dir)
-            .map(|rd| {
-                rd.flatten()
-                    .map(|e| (e.path().is_dir(), e.file_name().to_string_lossy().to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
-        // dirs first, then alphabetical (case-insensitive)
-        ents.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.to_lowercase().cmp(&b.1.to_lowercase())));
-        let mut text = format!("{}:\n", dir.display());
-        let mut meta = vec![LineMeta::None];
-        text.push_str("  ../\n");
-        meta.push(LineMeta::Path(dir.parent().unwrap_or(dir).to_path_buf()));
-        for (isdir, n) in ents {
-            text.push_str(&format!("  {}{}\n", n, if isdir { "/" } else { "" }));
-            meta.push(LineMeta::Path(dir.join(&n)));
+        self.open_dir_at(dir, None);
+    }
+
+    /// Open a directory and optionally select an entry inside it.
+    pub fn open_dir_at(&mut self, dir: &Path, select: Option<&Path>) {
+        let dir = match std::fs::canonicalize(dir) {
+            Ok(path) => path,
+            Err(err) => {
+                self.say(format!("Dired: cannot access {}: {err}", dir.display()));
+                return;
+            }
+        };
+        let read_dir = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(err) => {
+                self.say(format!("Dired: cannot read {}: {err}", dir.display()));
+                return;
+            }
+        };
+
+        let mut entries: Vec<(bool, String, PathBuf)> = Vec::new();
+        let mut entry_error = None;
+        for item in read_dir {
+            match item {
+                Ok(entry) => {
+                    let path = entry.path();
+                    let is_dir = std::fs::metadata(&path)
+                        .map(|metadata| metadata.is_dir())
+                        .unwrap_or(false);
+                    entries.push((is_dir, entry.file_name().to_string_lossy().into_owned(), path));
+                }
+                Err(err) => entry_error = Some(err),
+            }
         }
+        entries.sort_by(|a, b| {
+            b.0.cmp(&a.0).then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase()))
+        });
+
+        let mut text = format!("{}:\n", dir.display());
+        let parent_meta = dir.parent()
+            .map(|parent| LineMeta::Path(parent.to_path_buf()))
+            .unwrap_or(LineMeta::None);
+        let mut meta = vec![LineMeta::None, parent_meta];
+        text.push_str("  ../\n");
+        for (is_dir, name, path) in &entries {
+            text.push_str(&format!("  {}{}\n", name, if *is_dir { "/" } else { "" }));
+            meta.push(LineMeta::Path(path.clone()));
+        }
+
         let name = format!("*dired {}*", dir.display());
         self.open_special(&name, BufKind::Dired, &text, meta, false);
-        self.buf_mut().cursor = Pos::new(1.min(self.buf().lines.len() - 1), 2);
+        {
+            let visible_height = self.text_h.saturating_sub(2) / 2;
+            let buffer = self.buf_mut();
+            buffer.path = Some(dir.clone());
+            let selected_line = select
+                .and_then(|wanted| buffer.meta.iter().position(|item| matches!(item, LineMeta::Path(path) if path.as_path() == wanted)))
+                .unwrap_or(1);
+            buffer.cursor = Pos::new(selected_line.min(buffer.lines.len().saturating_sub(1)), 2);
+            buffer.top = buffer.cursor.line.saturating_sub(visible_height);
+        }
+        if let Some(err) = entry_error {
+            self.say(format!("Dired: some entries could not be read: {err}"));
+        }
     }
 
     pub fn copy_file(&mut self, path: PathBuf) {
+        if !path_exists(path.as_path()) {
+            self.say(format!("Copy failed: {} no longer exists", path.display()));
+            return;
+        }
         self.file_clipboard = Some(path.clone());
+        self.file_clipboard_cut = false;
         self.say(format!("Copied: {}", path.file_name().unwrap_or_default().to_string_lossy()));
     }
 
     pub fn cut_file(&mut self, path: PathBuf) {
+        if !path_exists(path.as_path()) {
+            self.say(format!("Cut failed: {} no longer exists", path.display()));
+            return;
+        }
         self.file_clipboard = Some(path.clone());
+        self.file_clipboard_cut = true;
         self.say(format!("Cut: {}", path.file_name().unwrap_or_default().to_string_lossy()));
     }
 
     pub fn paste_file(&mut self, dest_dir: PathBuf) {
-        if let Some(src) = self.file_clipboard.clone() {
-            let dest = dest_dir.join(src.file_name().unwrap());
-            if let Err(e) = std::fs::rename(&src, &dest) {
-                self.say(format!("Paste failed: {e}"));
-            } else {
-                self.file_clipboard = None;
+        let Some(src) = self.file_clipboard.clone() else {
+            self.say("No file in clipboard");
+            return;
+        };
+        let Some(file_name) = src.file_name() else {
+            self.say("Paste failed: invalid source path");
+            return;
+        };
+        let dest = dest_dir.join(file_name);
+        if !path_exists(src.as_path()) {
+            self.say(format!("Paste failed: {} no longer exists", src.display()));
+            return;
+        }
+        if src == dest {
+            self.say("Paste cancelled: source and destination are identical");
+            return;
+        }
+        if src.is_dir() && dest.starts_with(&src) {
+            self.say("Paste cancelled: cannot copy a directory into itself");
+            return;
+        }
+        if path_exists(dest.as_path()) {
+            self.say(format!("Paste failed: {} already exists", dest.display()));
+            return;
+        }
+
+        let result = if self.file_clipboard_cut {
+            match std::fs::rename(&src, &dest) {
+                Ok(()) => Ok(()),
+                Err(rename_error) => {
+                    // Cross-device moves cannot be completed with rename alone.
+                    match copy_path_recursive(&src, &dest) {
+                        Ok(()) => match remove_path_recursive(&src) {
+                            Ok(()) => Ok(()),
+                            Err(err) => {
+                                let _ = remove_path_recursive(&dest);
+                                Err(err)
+                            }
+                        },
+                        Err(copy_error) => Err(io::Error::new(
+                            copy_error.kind(),
+                            format!("{copy_error} (rename also failed: {rename_error})"),
+                        )),
+                    }
+                }
+            }
+        } else {
+            copy_path_recursive(&src, &dest)
+        };
+
+        match result {
+            Err(err) => self.say(format!("Paste failed: {err}")),
+            Ok(()) => {
+                if self.file_clipboard_cut {
+                    self.file_clipboard = None;
+                    self.file_clipboard_cut = false;
+                }
                 self.say(format!("Pasted: {}", dest.file_name().unwrap_or_default().to_string_lossy()));
                 self.dired_refresh();
             }
-        } else {
-            self.say("No file in clipboard");
         }
     }
 
@@ -783,35 +892,45 @@ impl Editor {
     }
 
     pub fn delete_file(&mut self, path: PathBuf) {
-        let result = if path.is_dir() {
-            std::fs::remove_dir_all(&path)
-        } else {
-            std::fs::remove_file(&path)
-        };
-        match result {
-            Err(e) => self.say(format!("Delete failed: {e}")),
+        if !path_exists(path.as_path()) {
+            self.say(format!("Delete failed: {} no longer exists", path.display()));
+            return;
+        }
+        match remove_path_recursive(&path) {
+            Err(err) => self.say(format!("Delete failed: {err}")),
             Ok(()) => {
                 self.say(format!("Deleted: {}", path.file_name().unwrap_or_default().to_string_lossy()));
+                if self.file_clipboard.as_deref() == Some(path.as_path()) {
+                    self.file_clipboard = None;
+                    self.file_clipboard_cut = false;
+                }
                 self.dired_refresh();
             }
         }
     }
 
-    /// Return the directory shown in the current dired buffer.
+    /// Return the directory represented by the active Dired buffer.
     pub fn dired_current_dir(&self) -> Option<PathBuf> {
-        // meta[1] is the "../" entry; its parent is the dir being listed.
-        self.buf().meta.get(1).and_then(|m| {
-            if let LineMeta::Path(p) = m { p.parent().map(|d| d.to_path_buf()) } else { None }
-        })
+        if self.buf().kind == BufKind::Dired {
+            self.buf().path.clone()
+        } else {
+            None
+        }
     }
 
-    /// Re-open the current dired directory in-place.
+    /// Refresh the current listing while keeping the selected entry if possible.
     pub fn dired_refresh(&mut self) {
         if self.buf().kind != BufKind::Dired {
             return;
         }
-        if let Some(dir) = self.dired_current_dir() {
-            self.open_dir(&dir);
+        let dir = self.dired_current_dir();
+        let selected = self.buf().meta.get(self.buf().cursor.line).and_then(|meta| {
+            if let LineMeta::Path(path) = meta { Some(path.clone()) } else { None }
+        });
+        if let Some(dir) = dir {
+            self.open_dir_at(&dir, selected.as_deref());
+        } else {
+            self.say("Dired: current directory is unavailable");
         }
     }
 
@@ -1100,7 +1219,7 @@ impl Editor {
 
                     if self.vim_mode == VimMode::Normal {
                         self.vim_mode = VimMode::Visual;
-                        //self.say("-- VISUAL --");
+                        self.say("-- VISUAL --");
                         if self.buf().mark.is_none() {
                             let cur = self.buf().cursor;
                             self.buf_mut().mark = Some(cur);
@@ -1467,28 +1586,49 @@ impl Editor {
                 None => self.say("Unknown language"),
             },
             PKind::DiredCreate(dir) => {
-                if !value.trim().is_empty() {
-                    let p = dir.join(value.trim());
-                    // If there's a file in clipboard, treat this as a rename/move
-                    if let Some(src) = self.file_clipboard.take() {
-                        if let Err(e) = std::fs::rename(&src, &p) {
-                            self.say(format!("Rename failed: {e}"));
-                        } else {
-                            self.say(format!("Renamed to: {}", p.file_name().unwrap_or_default().to_string_lossy()));
-                            self.dired_refresh();
-                        }
-                    } else if value.trim().ends_with('/') {
-                        if let Err(e) = std::fs::create_dir_all(&p) {
-                            self.say(format!("Mkdir failed: {e}"));
-                        } else {
-                            self.say(format!("Created dir: {}", p.display()));
-                            self.dired_refresh();
-                        }
-                    } else if let Err(e) = std::fs::File::create(&p) {
-                        self.say(format!("Create failed: {e}"));
+                let input = value.trim();
+                if input.is_empty() {
+                    self.say("Create cancelled");
+                } else {
+                    let is_dir = input.ends_with(std::path::MAIN_SEPARATOR) || input.ends_with('/');
+                    let name = input.trim_end_matches(&['/', '\\'][..]);
+                    if name.is_empty() {
+                        self.say("Create failed: invalid name");
+                        return;
+                    }
+                    let path = dir.join(name);
+                    let result = if is_dir {
+                        std::fs::create_dir_all(&path)
                     } else {
-                        self.say(format!("Created: {}", p.file_name().unwrap_or_default().to_string_lossy()));
-                        self.dired_refresh();
+                        std::fs::OpenOptions::new().write(true).create_new(true).open(&path).map(|_| ())
+                    };
+                    match result {
+                        Ok(()) => {
+                            self.say(format!("Created: {}", path.display()));
+                            self.dired_refresh();
+                        }
+                        Err(err) => self.say(format!("Create failed: {err}")),
+                    }
+                }
+            }
+            PKind::DiredRename { dir, source } => {
+                let input = value.trim();
+                if input.is_empty() {
+                    self.say("Rename cancelled");
+                } else {
+                    let destination = dir.join(input);
+                    if destination == source {
+                        self.say("Rename cancelled: source and destination are identical");
+                    } else if path_exists(destination.as_path()) {
+                        self.say(format!("Rename failed: {} already exists", destination.display()));
+                    } else {
+                        match std::fs::rename(&source, &destination) {
+                            Ok(()) => {
+                                self.say(format!("Renamed: {}", destination.display()));
+                                self.dired_refresh();
+                            }
+                            Err(err) => self.say(format!("Rename failed: {err}")),
+                        }
                     }
                 }
             }
@@ -1673,6 +1813,9 @@ impl Editor {
                 return true;
             }
             "n" | "p" => {
+                if kind == BufKind::Dired {
+                    return false;
+                }
                 let down = key == "n";
                 if kind == BufKind::GitDiff {
                     self.diff_hunk_jump(down);
@@ -1710,7 +1853,7 @@ impl Editor {
                     }
                 }
             }
-            (BufKind::Dired, "g") => self.dired_refresh(),
+            (BufKind::Dired, "R") => self.dired_refresh(),
             _ => return false,
         }
         true
@@ -1738,8 +1881,11 @@ impl Editor {
             LineMeta::Path(p) => {
                 if p.is_dir() {
                     self.open_dir(&p)
-                } else {
+                } else if p.is_file() {
                     self.visit_file_line(&p, 1)
+                } else {
+                    self.say(format!("Dired: {} no longer exists", p.display()));
+                    self.dired_refresh();
                 }
             }
             LineMeta::Buf(n) => {
@@ -1761,6 +1907,57 @@ impl Editor {
             }
             Err(e) => self.say(e),
         }
+    }
+}
+
+// --------------------------------------------------------------- Dired filesystem helpers
+fn copy_path_recursive(source: &Path, destination: &Path) -> io::Result<()> {
+    let result = copy_path_recursive_inner(source, destination);
+    if result.is_err() {
+        let _ = remove_path_recursive(destination);
+    }
+    result
+}
+
+fn copy_path_recursive_inner(source: &Path, destination: &Path) -> io::Result<()> {
+    let metadata = std::fs::symlink_metadata(source)?;
+    if metadata.file_type().is_symlink() {
+        let target = std::fs::read_link(source)?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, destination)?;
+        #[cfg(windows)]
+        {
+            if std::fs::metadata(source).map(|m| m.is_dir()).unwrap_or(false) {
+                std::os::windows::fs::symlink_dir(target, destination)?;
+            } else {
+                std::os::windows::fs::symlink_file(target, destination)?;
+            }
+        }
+        return Ok(());
+    }
+    if metadata.is_dir() {
+        std::fs::create_dir(destination)?;
+        for entry in std::fs::read_dir(source)? {
+            let entry = entry?;
+            copy_path_recursive_inner(&entry.path(), &destination.join(entry.file_name()))?;
+        }
+        std::fs::set_permissions(destination, metadata.permissions())?;
+    } else {
+        std::fs::copy(source, destination)?;
+    }
+    Ok(())
+}
+
+fn path_exists(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok()
+}
+
+fn remove_path_recursive(path: &Path) -> io::Result<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.is_dir() && !metadata.file_type().is_symlink() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
     }
 }
 

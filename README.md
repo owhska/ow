@@ -143,6 +143,36 @@ All Git operations use **libgit2**, without requiring the `git` executable.
 | `SPC g F` | Pull (fast-forward only) |
 | `SPC g P` | Push |
 
+## Dired — Explorador de arquivos
+
+Abra o Dired com `SPC e` ou `Ctrl-x d`.
+
+### Navegação
+
+| Tecla | Ação |
+|---|---|
+| `j` / `k` | próxima / entrada anterior |
+| `h` | subir para o diretório pai |
+| `l` / `Enter` | abrir arquivo ou entrar no diretório |
+| `gg` / `G` | topo / fim da listagem |
+| `Ctrl-f` / `Ctrl-d` | rolar para baixo |
+| `Ctrl-b` / `Ctrl-u` | rolar para cima |
+| `q` | fechar Dired |
+
+### Operações
+
+| Tecla | Ação |
+|---|---|
+| `c` | copiar entrada selecionada |
+| `x` | recortar entrada selecionada |
+| `p` | colar no diretório atual |
+| `r` | renomear entrada selecionada |
+| `d` | excluir entrada selecionada |
+| `%` | criar arquivo ou diretório |
+| `R` | atualizar a listagem |
+
+A cópia pode ser colada repetidamente. O recorte move a entrada quando colada. Para criar um diretório, informe um nome terminado em `/`.
+
 ### Original Emacs-style Git shortcuts
 
 The existing `C-x` bindings remain available.

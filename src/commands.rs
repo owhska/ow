@@ -679,7 +679,9 @@ impl Editor {
     }
 
     fn dired_cmd(&mut self) {
-        let dir = self.buf().path.as_ref().and_then(|p| p.parent()).map(|d| d.to_path_buf()).unwrap_or_else(|| self.cwd.clone());
+        let dir = self.dired_current_dir().or_else(|| {
+            self.buf().path.as_ref().and_then(|path| path.parent().map(std::path::Path::to_path_buf))
+        }).unwrap_or_else(|| self.cwd.clone());
         self.open_dir(&dir);
     }
 
@@ -801,7 +803,8 @@ impl Editor {
         t.push_str("  %                  create file or directory\n");
         t.push_str("  r / d              rename / delete entry\n");
         t.push_str("  c / x / p          copy / cut / paste entry\n");
-        t.push_str("  g / q              refresh / close Dired\n\n");
+        t.push_str("  R / q              refresh / close Dired\n");
+        t.push_str("  Copy is repeatable; cut moves the entry on paste.\n\n");
 
         t.push_str("Git status buffer (C-x g):\n");
         t.push_str("  s / u              stage / unstage entry\n");
