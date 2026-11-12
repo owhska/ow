@@ -10,35 +10,50 @@ use unicode_width::UnicodeWidthChar;
 fn bold() -> Style {
     Style::default().add_modifier(Modifier::BOLD)
 }
-fn fg(c: Color) -> Style {
-    Style::default().fg(c)
+
+fn fg(color: Color) -> Style {
+    Style::default().fg(color)
 }
 
-fn special_styles(kind: BufKind, line: &str, meta: Option<&LineMeta>) -> Option<Vec<Style>> {
-    let n = line.chars().count();
-    let mut v = vec![Style::default(); n];
-    let mut paint = |a: usize, b: usize, s: Style| {
-        for x in v.iter_mut().take(b.min(n)).skip(a) {
-            *x = s;
+fn special_styles(
+    kind: BufKind,
+    line: &str,
+    meta: Option<&LineMeta>,
+) -> Option<Vec<Style>> {
+    let length = line.chars().count();
+    let mut styles = vec![Style::default(); length];
+
+    let mut paint = |a: usize, b: usize, style: Style| {
+        for style_cell in styles
+            .iter_mut()
+            .take(b.min(length))
+            .skip(a)
+        {
+            *style_cell = style;
         }
     };
+
     match kind {
         BufKind::GitStatus => {
             if line.starts_with("Repository:") || line.starts_with("Branch:") {
                 paint(0, 11, fg(c(TYPE)).add_modifier(Modifier::BOLD));
-            } else if line.starts_with("Staged") || line.starts_with("Unstaged") || line.starts_with("Untracked") {
-                paint(0, n, bold());
+            } else if line.starts_with("Staged")
+                || line.starts_with("Unstaged")
+                || line.starts_with("Untracked")
+            {
+                paint(0, length, bold());
             } else if line.starts_with(" s stage") {
-                paint(0, n, fg(c(DIM)));
+                paint(0, length, fg(c(DIM)));
             } else if let Some(LineMeta::File { staged, .. }) = meta {
-                let col = if *staged {
+                let color = if *staged {
                     c(INFO)
                 } else if line.trim_start().starts_with('?') {
                     c(ERROR)
                 } else {
                     c(WARN)
                 };
-                paint(0, n, fg(col));
+
+                paint(0, length, fg(color));
             }
         }
         BufKind::GitLog => {
@@ -48,12 +63,17 @@ fn special_styles(kind: BufKind, line: &str, meta: Option<&LineMeta>) -> Option<
             paint(32, 46, fg(c(INFO)));
         }
         BufKind::Grep => match meta {
-            Some(LineMeta::Grep { path, line: ln }) => {
-                let pl = path.chars().count();
-                paint(0, pl, fg(c(TYPE)));
-                paint(pl, pl + 1 + ln.to_string().len() + 1, fg(c(INFO)));
+            Some(LineMeta::Grep { path, line: line_number }) => {
+                let path_length = path.chars().count();
+
+                paint(0, path_length, fg(c(TYPE)));
+                paint(
+                    path_length,
+                    path_length + 1 + line_number.to_string().len() + 1,
+                    fg(c(INFO)),
+                );
             }
-            _ => paint(0, n, bold()),
+            _ => paint(0, length, bold()),
         },
         BufKind::GitBlame => {
             paint(0, 7, fg(c(WARN)));
@@ -62,24 +82,25 @@ fn special_styles(kind: BufKind, line: &str, meta: Option<&LineMeta>) -> Option<
         }
         BufKind::Dired => {
             if meta.is_none() {
-                paint(0, n, bold());
+                paint(0, length, bold());
             } else if line.ends_with('/') {
-                paint(0, n, fg(c(FUNC)).add_modifier(Modifier::BOLD));
+                paint(0, length, fg(c(FUNC)).add_modifier(Modifier::BOLD));
             }
         }
         BufKind::List | BufKind::Help => {
             if !line.starts_with(' ') && !line.is_empty() || line.starts_with(" MR") {
-                paint(0, n, bold());
+                paint(0, length, bold());
             }
         }
         _ => return None,
     }
-    Some(v)
+
+    Some(styles)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn paint_line(
-    buf: &mut ratatui::buffer::Buffer,
+    buffer: &mut ratatui::buffer::Buffer,
     x0: u16,
     y: u16,
     width: usize,
@@ -89,146 +110,270 @@ fn paint_line(
     styles: Option<&[Style]>,
     overlays: &[(usize, usize, Style)],
 ) {
-    let mut d = 0usize;
-    for (i, c) in line.chars().enumerate() {
-        let cw = if c == '\t' { tab - d % tab } else if c.is_control() { 1 } else { c.width().unwrap_or(0) };
-        let mut st = styles.and_then(|s| s.get(i)).copied().unwrap_or_default();
-        for (a, b, o) in overlays {
-            if i >= *a && i < *b {
-                st = st.patch(*o);
+    let mut display_column = 0usize;
+
+    for (index, character) in line.chars().enumerate() {
+        let cell_width = if character == '\t' {
+            tab - display_column % tab
+        } else if character.is_control() {
+            1
+        } else {
+            character.width().unwrap_or(0)
+        };
+
+        let mut style = styles
+            .and_then(|styles| styles.get(index))
+            .copied()
+            .unwrap_or_default();
+
+        for (start, end, overlay) in overlays {
+            if index >= *start && index < *end {
+                style = style.patch(*overlay);
             }
         }
-        if d >= left && d + cw <= left + width && cw > 0 {
-            let x = x0 + (d - left) as u16;
-            if c == '\t' {
-                for k in 0..cw {
-                    buf.set_string(x + k as u16, y, " ", st);
+
+        if display_column >= left
+            && display_column + cell_width <= left + width
+            && cell_width > 0
+        {
+            let x = x0 + (display_column - left) as u16;
+
+            if character == '\t' {
+                for offset in 0..cell_width {
+                    buffer.set_string(x + offset as u16, y, " ", style);
                 }
-            } else if c.is_control() {
-                buf.set_string(x, y, "·", st);
+            } else if character.is_control() {
+                buffer.set_string(x, y, "·", style);
             } else {
-                buf.set_string(x, y, c.to_string(), st);
+                buffer.set_string(x, y, character.to_string(), style);
             }
         }
-        d += cw;
-        if d >= left + width {
+
+        display_column += cell_width;
+
+        if display_column >= left + width {
             break;
         }
     }
 }
 
 fn render_window(
-    fbuf: &mut ratatui::buffer::Buffer,
-    ed: &mut Editor,
-    win: &Window,
+    frame_buffer: &mut ratatui::buffer::Buffer,
+    editor: &mut Editor,
+    window: &Window,
     rect: Rect,
     is_active: bool,
-    hl_range: Option<(Pos, Pos)>,
-    cursor_pos: &mut Option<(u16, u16)>,
+    highlight_range: Option<(Pos, Pos)>,
+    cursor_position: &mut Option<(u16, u16)>,
 ) {
-    if win.buf_idx >= ed.bufs.len() {
+    if window.buf_idx >= editor.bufs.len() {
         return;
     }
-    let line_numbers = ed.line_numbers;
-    let git_info = if is_active { ed.git.clone() } else { None };
-    let b = &mut ed.bufs[win.buf_idx];
-    let gm = if b.kind == BufKind::File && b.git_tracked { 1 } else { 0 };
-    let gl = if line_numbers { b.lines.len().to_string().len() + 1 } else { 0 };
-    let text_w = (rect.width as usize).saturating_sub(gm + gl);
-    let text_h = (rect.height as usize).saturating_sub(1);
 
-    let top = if is_active { b.top } else { win.top.min(b.lines.len().saturating_sub(1)) };
-    let left = if is_active { b.left } else { win.left };
-    let cursor = if is_active { b.cursor } else { win.cursor };
-    let region = if b.mark_active && is_active {
-        b.mark.map(|m| if m <= cursor { (m, cursor) } else { (cursor, m) })
+    let line_numbers = editor.line_numbers;
+    let git_info = if is_active {
+        editor.git.clone()
     } else {
         None
     };
-    let n = b.lines.len();
-    let (tab, kind) = (b.tab_width, b.kind);
 
-    for r in 0..text_h {
-        let li = top + r;
-        let y = rect.y + r as u16;
-        if li >= n {
+    let buffer = &mut editor.bufs[window.buf_idx];
+    let git_gutter_width = if buffer.kind == BufKind::File && buffer.git_tracked {
+        1
+    } else {
+        0
+    };
+
+    let line_number_width = if line_numbers {
+        buffer.lines.len().to_string().len() + 1
+    } else {
+        0
+    };
+
+    let text_width = (rect.width as usize).saturating_sub(git_gutter_width + line_number_width);
+    let text_height = (rect.height as usize).saturating_sub(1);
+
+    let top = if is_active {
+        buffer.top
+    } else {
+        window.top.min(buffer.lines.len().saturating_sub(1))
+    };
+
+    let left = if is_active {
+        buffer.left
+    } else {
+        window.left
+    };
+
+    let cursor = if is_active {
+        buffer.cursor
+    } else {
+        window.cursor
+    };
+
+    let selection = if buffer.mark_active && is_active {
+        buffer.mark.map(|mark| {
+            if mark <= cursor {
+                (mark, cursor)
+            } else {
+                (cursor, mark)
+            }
+        })
+    } else {
+        None
+    };
+
+    let line_count = buffer.lines.len();
+    let (tab_width, kind) = (buffer.tab_width, buffer.kind);
+
+    for row in 0..text_height {
+        let line_index = top + row;
+        let y = rect.y + row as u16;
+
+        if line_index >= line_count {
             break;
         }
-        if gm == 1 {
-            let m = b.git_marks.get(li).copied().unwrap_or(0);
-            let (ch, st) = match m {
+
+        if git_gutter_width == 1 {
+            let mark = buffer.git_marks.get(line_index).copied().unwrap_or(0);
+
+            let (character, style) = match mark {
                 MARK_ADDED => ("▎", fg(c(INFO))),
                 MARK_MODIFIED => ("▎", fg(c(WARN))),
                 MARK_DELETED => ("▁", fg(c(ERROR))),
                 _ => (" ", Style::default()),
             };
-            fbuf.set_string(rect.x, y, ch, st);
+
+            frame_buffer.set_string(rect.x, y, character, style);
         }
-        if gl > 0 {
-            let s = format!("{:>w$} ", li + 1, w = gl - 1);
-            fbuf.set_string(rect.x + gm as u16, y, s, fg(c(DIM)));
+
+        if line_number_width > 0 {
+            let number = format!(
+                "{:>width$} ",
+                line_index + 1,
+                width = line_number_width - 1
+            );
+
+            frame_buffer.set_string(
+                rect.x + git_gutter_width as u16,
+                y,
+                number,
+                fg(c(DIM)),
+            );
         }
-        if kind == BufKind::File && li == cursor.line && is_active {
-            // No-op: visual mode selection logic handles the highlight via overlays
-        }
-        let line = b.lines[li].clone();
+
+        let line = buffer.lines[line_index].clone();
+
         let styles = match kind {
-            BufKind::File | BufKind::GitDiff => b.line_styles(li),
-            k => special_styles(k, &line, b.meta.get(li)),
+            BufKind::File | BufKind::GitDiff => buffer.line_styles(line_index),
+            kind => special_styles(kind, &line, buffer.meta.get(line_index)),
         };
-        let mut ov: Vec<(usize, usize, Style)> = Vec::new();
-        let len = line.chars().count();
-        if let Some((a, e)) = region {
-            if li >= a.line && li <= e.line {
-                let s = if li == a.line { a.col } else { 0 };
-                let en = if li == e.line { e.col } else { len + 1 };
-                if ed.vim_mode == VimMode::Visual || ed.vim_mode == VimMode::VisualLine {
-                    ov.push((0, len, Style::default().bg(c(SEL))));
-                } else {
-                    ov.push((s, en, Style::default().bg(c(SEL))));
+
+        let mut overlays: Vec<(usize, usize, Style)> = Vec::new();
+        let line_length = line.chars().count();
+
+        if let Some((start, end)) = selection {
+            if line_index >= start.line && line_index <= end.line {
+                if editor.vim_mode == VimMode::VisualLine {
+                    // Line-wise Visual mode: highlight the entire line.
+                    overlays.push((
+                        0,
+                        line_length,
+                        Style::default().bg(c(SEL)),
+                    ));
+                } else if editor.vim_mode == VimMode::Visual {
+                    // Character-wise Visual mode: highlight only from the
+                    // selection start column to the cursor column.
+                    let start_column = if line_index == start.line {
+                        start.col
+                    } else {
+                        0
+                    };
+
+                    let end_column = if line_index == end.line {
+                        end.col
+                    } else {
+                        line_length
+                    };
+
+                    if start_column < end_column {
+                        overlays.push((
+                            start_column,
+                            end_column,
+                            Style::default().bg(c(SEL)),
+                        ));
+                    }
                 }
             }
         }
+
         if is_active {
-            if let Some((a, e)) = hl_range {
-                if li >= a.line && li <= e.line {
-                    let s = if li == a.line { a.col } else { 0 };
-                    let en = if li == e.line { e.col } else { len };
-                    ov.push((s, en, Style::default().bg(c(WARN)).fg(Color::Black)));
+            if let Some((start, end)) = highlight_range {
+                if line_index >= start.line && line_index <= end.line {
+                    let start_column = if line_index == start.line {
+                        start.col
+                    } else {
+                        0
+                    };
+
+                    let end_column = if line_index == end.line {
+                        end.col
+                    } else {
+                        line_length
+                    };
+
+                    overlays.push((
+                        start_column,
+                        end_column,
+                        Style::default().bg(c(WARN)).fg(Color::Black),
+                    ));
                 }
             }
         }
-        if kind != BufKind::File && li == cursor.line && is_active && !matches!(kind, BufKind::GitBlame | BufKind::Help) {
-            // Removed cursor line highlight to avoid interference with visual mode
-        }
+
         paint_line(
-            fbuf,
-            rect.x + (gm + gl) as u16,
+            frame_buffer,
+            rect.x + (git_gutter_width + line_number_width) as u16,
             y,
-            text_w,
+            text_width,
             left,
-            tab,
+            tab_width,
             &line,
             styles.as_deref(),
-            &ov,
+            &overlays,
         );
-
     }
 
     // ---- mode line
-    let flag = if b.read_only { "%%" } else if b.modified { "**" } else { "--" };
-    let pct = if b.lines.len() <= text_h {
+    let flag = if buffer.read_only {
+        "%%"
+    } else if buffer.modified {
+        "**"
+    } else {
+        "--"
+    };
+
+    let percentage = if buffer.lines.len() <= text_height {
         "All".to_string()
     } else if top == 0 {
         "Top".to_string()
-    } else if top + text_h >= b.lines.len() {
+    } else if top + text_height >= buffer.lines.len() {
         "Bot".to_string()
     } else {
-        format!("{}%", top * 100 / (b.lines.len() - text_h).max(1))
+        format!(
+            "{}%",
+            top * 100 / (buffer.lines.len() - text_height).max(1)
+        )
     };
-    let lang = if b.kind == BufKind::File { format!("({})  ", b.hl.name) } else { String::new() };
+
+    let language = if buffer.kind == BufKind::File {
+        format!("({})  ", buffer.hl.name)
+    } else {
+        String::new()
+    };
+
     let mode_badge = if is_active {
-        match ed.vim_mode {
+        match editor.vim_mode {
             VimMode::Normal => "[NORMAL] ",
             VimMode::Insert => "[INSERT] ",
             VimMode::Visual => "[VISUAL] ",
@@ -237,164 +382,325 @@ fn render_window(
     } else {
         ""
     };
-    let left_txt = format!(" {mode_badge}{flag}  {}  {lang}L{}/{} C{}  {pct}", b.name, cursor.line + 1, b.lines.len(), cursor.col + 1);
-    let mut right_txt = String::new();
+
+    let left_text = format!(
+        " {mode_badge}{flag}  {}  {language}L{}/{} C{}  {percentage}",
+        buffer.name,
+        cursor.line + 1,
+        buffer.lines.len(),
+        cursor.col + 1,
+    );
+
+    let mut right_text = String::new();
+
     if is_active {
-        if let Some(g) = &git_info {
-            right_txt = format!("git:{}", g.branch);
-            if g.ahead > 0 {
-                right_txt.push_str(&format!(" ↑{}", g.ahead));
+        if let Some(git) = &git_info {
+            right_text = format!("git:{}", git.branch);
+
+            if git.ahead > 0 {
+                right_text.push_str(&format!(" ↑{}", git.ahead));
             }
-            if g.behind > 0 {
-                right_txt.push_str(&format!(" ↓{}", g.behind));
+
+            if git.behind > 0 {
+                right_text.push_str(&format!(" ↓{}", git.behind));
             }
-            if g.staged > 0 {
-                right_txt.push_str(&format!(" +{}", g.staged));
+
+            if git.staged > 0 {
+                right_text.push_str(&format!(" +{}", git.staged));
             }
-            if g.modified > 0 {
-                right_txt.push_str(&format!(" ~{}", g.modified));
+
+            if git.modified > 0 {
+                right_text.push_str(&format!(" ~{}", git.modified));
             }
-            if g.untracked > 0 {
-                right_txt.push_str(&format!(" ?{}", g.untracked));
+
+            if git.untracked > 0 {
+                right_text.push_str(&format!(" ?{}", git.untracked));
             }
-            right_txt.push(' ');
+
+            right_text.push(' ');
         }
     }
-    let ml = if is_active {
+
+    let mode_line_style = if is_active {
         Style::default().add_modifier(Modifier::REVERSED)
     } else {
         Style::default().bg(c(LINE)).fg(c(DIM))
     };
-    let my = rect.y + rect.height - 1;
-    let w = rect.width as usize;
-    fbuf.set_string(rect.x, my, " ".repeat(w), ml);
-    let lw = left_txt.chars().count();
-    let rw = right_txt.chars().count();
-    fbuf.set_string(rect.x, my, left_txt.chars().take(w).collect::<String>(), ml);
-    if lw + rw + 2 <= w {
-        fbuf.set_string(rect.x + (w - rw) as u16, my, &right_txt, ml.add_modifier(Modifier::BOLD));
+
+    let mode_line_y = rect.y + rect.height - 1;
+    let width = rect.width as usize;
+
+    frame_buffer.set_string(
+        rect.x,
+        mode_line_y,
+        " ".repeat(width),
+        mode_line_style,
+    );
+
+    let left_length = left_text.chars().count();
+    let right_length = right_text.chars().count();
+
+    frame_buffer.set_string(
+        rect.x,
+        mode_line_y,
+        left_text
+            .chars()
+            .take(width)
+            .collect::<String>(),
+        mode_line_style,
+    );
+
+    if left_length + right_length + 2 <= width {
+        frame_buffer.set_string(
+            rect.x + (width - right_length) as u16,
+            mode_line_y,
+            &right_text,
+            mode_line_style.add_modifier(Modifier::BOLD),
+        );
     }
 
-    if is_active && cursor_pos.is_none() {
-        let d = display_col(&b.lines[cursor.line], cursor.col, b.tab_width);
-        if cursor.line >= top && cursor.line < top + text_h && d >= left {
-            let x = rect.x + (gm + gl) as u16 + (d - left) as u16;
+    if is_active && cursor_position.is_none() {
+        let display_column = display_col(
+            &buffer.lines[cursor.line],
+            cursor.col,
+            buffer.tab_width,
+        );
+
+        if cursor.line >= top
+            && cursor.line < top + text_height
+            && display_column >= left
+        {
+            let x = rect.x
+                + (git_gutter_width + line_number_width) as u16
+                + (display_column - left) as u16;
             let y = rect.y + (cursor.line - top) as u16;
-            if x < rect.x + rect.width && y < my {
-                *cursor_pos = Some((x, y));
+
+            if x < rect.x + rect.width && y < mode_line_y {
+                *cursor_position = Some((x, y));
             }
         }
     }
 }
 
-pub fn render(f: &mut Frame, ed: &mut Editor) {
-    let area = f.area();
-    let (w, h) = (area.width as usize, area.height as usize);
-    ed.screen_w = area.width;
-    ed.screen_h = area.height;
-    if h < 3 || w < 12 {
+pub fn render(frame: &mut Frame, editor: &mut Editor) {
+    let area = frame.area();
+    let (width, height) = (area.width as usize, area.height as usize);
+
+    editor.screen_w = area.width;
+    editor.screen_h = area.height;
+
+    if height < 3 || width < 12 {
         return;
     }
 
-    let hl_range: Option<(Pos, Pos)> = match &ed.mode {
-        Mode::ISearch(s) => s.matched,
-        Mode::QReplace(q) => q.cur,
+    let highlight_range: Option<(Pos, Pos)> = match &editor.mode {
+        Mode::ISearch(search) => search.matched,
+        Mode::QReplace(replace) => replace.cur,
         _ => None,
     };
 
-    let win_area = Rect::new(0, 0, w as u16, (h - 1) as u16);
-    let mut win_rects = Vec::new();
+    let window_area = Rect::new(0, 0, width as u16, (height - 1) as u16);
+    let mut window_rects = Vec::new();
     let mut separators = Vec::new();
-    ed.win_tree.compute_rects(win_area, &mut win_rects, &mut separators);
 
-    let active_id = ed.active_win_id;
-    for &(id, rect) in &win_rects {
-        if id == active_id {
-            ed.text_h = (rect.height as usize).saturating_sub(1);
-            ed.text_w = rect.width as usize;
-            ed.fix_scroll();
-            if let Some(w) = ed.windows.iter_mut().find(|w| w.id == id) {
-                if w.buf_idx < ed.bufs.len() {
-                    let b = &ed.bufs[w.buf_idx];
-                    w.cursor = b.cursor;
-                    w.top = b.top;
-                    w.left = b.left;
+    editor
+        .win_tree
+        .compute_rects(window_area, &mut window_rects, &mut separators);
+
+    let active_id = editor.active_win_id;
+
+    for &(window_id, rect) in &window_rects {
+        if window_id == active_id {
+            editor.text_h = (rect.height as usize).saturating_sub(1);
+            editor.text_w = rect.width as usize;
+            editor.fix_scroll();
+
+            if let Some(window) = editor
+                .windows
+                .iter_mut()
+                .find(|window| window.id == window_id)
+            {
+                if window.buf_idx < editor.bufs.len() {
+                    let buffer = &editor.bufs[window.buf_idx];
+                    window.cursor = buffer.cursor;
+                    window.top = buffer.top;
+                    window.left = buffer.left;
                 }
             }
+
             break;
         }
     }
 
-    let fbuf = f.buffer_mut();
+    let frame_buffer = frame.buffer_mut();
     let mut cursor: Option<(u16, u16)> = None;
 
-    // Draw vertical separators
-    for &(sep_x, sep_y, sep_h) in &separators {
-        for row in 0..sep_h {
-            fbuf.set_string(sep_x, sep_y + row, "│", fg(c(DIM)));
+    // Draw vertical separators.
+    for &(separator_x, separator_y, separator_height) in &separators {
+        for row in 0..separator_height {
+            frame_buffer.set_string(
+                separator_x,
+                separator_y + row,
+                "│",
+                fg(c(DIM)),
+            );
         }
     }
 
-    // Render each window
-    for &(id, rect) in &win_rects {
+    // Render each window.
+    for &(window_id, rect) in &window_rects {
         if rect.height < 2 || rect.width < 4 {
             continue;
         }
-        let is_active = id == active_id;
-        let win = ed.windows.iter().find(|w| w.id == id).cloned();
-        if let Some(win) = win {
-            render_window(fbuf, ed, &win, rect, is_active, hl_range, &mut cursor);
+
+        let is_active = window_id == active_id;
+
+        let window = editor
+            .windows
+            .iter()
+            .find(|window| window.id == window_id)
+            .cloned();
+
+        if let Some(window) = window {
+            render_window(
+                frame_buffer,
+                editor,
+                &window,
+                rect,
+                is_active,
+                highlight_range,
+                &mut cursor,
+            );
         }
     }
 
     // ---- echo area
-    let ey = (h - 1) as u16;
-    match &ed.mode {
-        Mode::Prompt(p) => {
-            let head = format!("{}{}", p.label, p.input);
-            fbuf.set_string(0, ey, head.chars().take(w).collect::<String>(), Style::default());
-            let lw = unicode_width::UnicodeWidthStr::width(p.label.as_str());
-            let iw: usize = p.input.chars().take(p.cur).map(|c| c.width().unwrap_or(1)).sum();
-            cursor = Some(((lw + iw).min(w - 1) as u16, ey));
-            let mut x = unicode_width::UnicodeWidthStr::width(head.as_str()) + 2;
-            let items: &Vec<String> = if !p.hint.is_empty() { &p.hint } else { &p.matches };
-            if x < w {
-                for (i, m) in items.iter().enumerate() {
-                    let mw = unicode_width::UnicodeWidthStr::width(m.as_str());
-                    if x + mw + 3 > w {
-                        fbuf.set_string(x as u16, ey, "…", fg(c(DIM)));
+    let echo_y = (height - 1) as u16;
+
+    match &editor.mode {
+        Mode::Prompt(prompt) => {
+            let head = format!("{}{}", prompt.label, prompt.input);
+
+            frame_buffer.set_string(
+                0,
+                echo_y,
+                head.chars().take(width).collect::<String>(),
+                Style::default(),
+            );
+
+            let label_width =
+                unicode_width::UnicodeWidthStr::width(prompt.label.as_str());
+
+            let input_width: usize = prompt
+                .input
+                .chars()
+                .take(prompt.cur)
+                .map(|c| c.width().unwrap_or(1))
+                .sum();
+
+            cursor = Some((
+                (label_width + input_width).min(width - 1) as u16,
+                echo_y,
+            ));
+
+            let mut x =
+                unicode_width::UnicodeWidthStr::width(head.as_str()) + 2;
+
+            let items: &Vec<String> = if !prompt.hint.is_empty() {
+                &prompt.hint
+            } else {
+                &prompt.matches
+            };
+
+            if x < width {
+                for (index, item) in items.iter().enumerate() {
+                    let item_width =
+                        unicode_width::UnicodeWidthStr::width(item.as_str());
+
+                    if x + item_width + 3 > width {
+                        frame_buffer.set_string(
+                            x as u16,
+                            echo_y,
+                            "…",
+                            fg(c(DIM)),
+                        );
                         break;
                     }
-                    let st = if p.hint.is_empty() && i == p.sel { Style::default().add_modifier(Modifier::REVERSED) } else { fg(c(DIM)) };
-                    fbuf.set_string(x as u16, ey, m, st);
-                    x += mw + 3;
+
+                    let style = if prompt.hint.is_empty() && index == prompt.sel {
+                        Style::default().add_modifier(Modifier::REVERSED)
+                    } else {
+                        fg(c(DIM))
+                    };
+
+                    frame_buffer.set_string(x as u16, echo_y, item, style);
+                    x += item_width + 3;
                 }
             }
         }
-        Mode::ISearch(s) => {
+        Mode::ISearch(search) => {
             let label = format!(
                 "{}I-search{}: {}",
-                if s.failing { "Failing " } else { "" },
-                if s.forward { "" } else { " backward" },
-                s.query
+                if search.failing { "Failing " } else { "" },
+                if search.forward { "" } else { " backward" },
+                search.query
             );
-            let st = if s.failing { fg(c(ERROR)) } else { Style::default() };
-            fbuf.set_string(0, ey, label.chars().take(w).collect::<String>(), st);
+
+            let style = if search.failing {
+                fg(c(ERROR))
+            } else {
+                Style::default()
+            };
+
+            frame_buffer.set_string(
+                0,
+                echo_y,
+                label.chars().take(width).collect::<String>(),
+                style,
+            );
         }
-        Mode::QReplace(q) => {
-            let t = format!("Query replacing {} with {}: (y/n/!/./q) ", q.from, q.to);
-            fbuf.set_string(0, ey, t.chars().take(w).collect::<String>(), bold());
+        Mode::QReplace(replace) => {
+            let text = format!(
+                "Query replacing {} with {}: (y/n/!/./q) ",
+                replace.from, replace.to
+            );
+
+            frame_buffer.set_string(
+                0,
+                echo_y,
+                text.chars().take(width).collect::<String>(),
+                bold(),
+            );
         }
-        Mode::YesNo(y) => {
-            fbuf.set_string(0, ey, y.q.chars().take(w).collect::<String>(), bold());
+        Mode::YesNo(yes_no) => {
+            frame_buffer.set_string(
+                0,
+                echo_y,
+                yes_no
+                    .q
+                    .chars()
+                    .take(width)
+                    .collect::<String>(),
+                bold(),
+            );
         }
         Mode::Normal => {
-            let m = if ed.msg.is_empty() && !ed.pending.is_empty() { format!("{} -", ed.pending.join(" ")) } else { ed.msg.clone() };
-            fbuf.set_string(0, ey, m.chars().take(w).collect::<String>(), Style::default());
+            let message = if editor.msg.is_empty() && !editor.pending.is_empty() {
+                format!("{} -", editor.pending.join(" "))
+            } else {
+                editor.msg.clone()
+            };
+
+            frame_buffer.set_string(
+                0,
+                echo_y,
+                message.chars().take(width).collect::<String>(),
+                Style::default(),
+            );
         }
     }
 
     if let Some((x, y)) = cursor {
-        f.set_cursor_position(Position::new(x, y));
+        frame.set_cursor_position(Position::new(x, y));
     }
 }
