@@ -103,7 +103,6 @@ impl Editor {
                 if b.cursor.col > 0 {
                     b.cursor.col -= 1;
                 }
-                //self.say("-- NORMAL --");
                 return true;
             }
             "RET" => {
@@ -198,7 +197,6 @@ impl Editor {
             "ESC" | "C-[" | "C-g" => {
                 self.vim_mode = VimMode::Normal;
                 self.buf_mut().mark_active = false;
-                //self.say("-- NORMAL --");
                 return true;
             }
             // Move selected lines: K and J as requested
@@ -214,14 +212,12 @@ impl Editor {
             "d" | "x" => {
                 self.delete_visual_selection();
                 self.vim_mode = VimMode::Normal;
-                //self.say("-- NORMAL --");
                 return true;
             }
             // Change selection:
             "c" => {
                 self.delete_visual_selection();
                 self.vim_mode = VimMode::Insert;
-                //self.say("-- INSERT --");
                 return true;
             }
             // Yank selection:
@@ -243,17 +239,14 @@ impl Editor {
             "V" => {
                 if self.vim_mode == VimMode::VisualLine {
                     self.vim_mode = VimMode::Visual;
-                    //self.say("-- VISUAL --");
                 } else {
                     self.vim_mode = VimMode::VisualLine;
-                    //self.say("-- VISUAL LINE --");
                 }
                 return true;
             }
             "v" => {
                 self.vim_mode = VimMode::Normal;
                 self.buf_mut().mark_active = false;
-                //self.say("-- NORMAL --");
                 return true;
             }
             // Movements:
@@ -323,7 +316,6 @@ impl Editor {
                     self.kill_line();
                     self.open_line();
                     self.vim_mode = VimMode::Insert;
-                    //self.say("-- INSERT --");
                     return true;
                 }
                 ('y', "y") => {
@@ -348,7 +340,6 @@ impl Editor {
                     self.kill(&text, false);
                     return true;
                 }
-                ('c', "w") => { self.kill_word(); self.vim_mode = VimMode::Insert; self.say("-- INSERT --"); return true; }
                 ('y', "w") => {
                     let at = self.buf().cursor;
                     self.buf_mut().mark = Some(at);
@@ -361,7 +352,6 @@ impl Editor {
                     return true;
                 }
                 ('d', "$") => { self.kill_line(); return true; }
-                ('c', "$") => { self.kill_line(); self.vim_mode = VimMode::Insert; self.say("-- INSERT --"); return true; }
                 ('y', "$") => {
                     let at = self.buf().cursor;
                     self.buf_mut().mark = Some(at);
@@ -390,8 +380,94 @@ impl Editor {
                     self.project_find_file();
                     return true;
                 }
-                // <leader><space>: project grep
-                "SPC g" => {
+                // Git namespace: <leader>g ...
+                "SPC g s" => {
+                    self.vim_pending.clear();
+                    self.git_status();
+                    return true;
+                }
+                "SPC g d" => {
+                    self.vim_pending.clear();
+                    self.git_diff_file();
+                    return true;
+                }
+                "SPC g D" => {
+                    self.vim_pending.clear();
+                    self.git_diff_repo();
+                    return true;
+                }
+                "SPC g l" => {
+                    self.vim_pending.clear();
+                    self.git_log(false);
+                    return true;
+                }
+                "SPC g L" => {
+                    self.vim_pending.clear();
+                    self.git_log(true);
+                    return true;
+                }
+                "SPC g b" => {
+                    self.vim_pending.clear();
+                    self.git_blame();
+                    return true;
+                }
+                "SPC g B" => {
+                    self.vim_pending.clear();
+                    self.git_blame_line();
+                    return true;
+                }
+                "SPC g a" => {
+                    self.vim_pending.clear();
+                    self.git_stage_file(true);
+                    return true;
+                }
+                "SPC g u" => {
+                    self.vim_pending.clear();
+                    self.git_stage_file(false);
+                    return true;
+                }
+                "SPC g c" => {
+                    self.vim_pending.clear();
+                    self.git_commit_cmd(false);
+                    return true;
+                }
+                "SPC g A" => {
+                    self.vim_pending.clear();
+                    self.git_commit_cmd(true);
+                    return true;
+                }
+                "SPC g o" => {
+                    self.vim_pending.clear();
+                    self.git_checkout_cmd();
+                    return true;
+                }
+                "SPC g r" => {
+                    self.vim_pending.clear();
+                    self.git_restore_cmd();
+                    return true;
+                }
+                "SPC g n" => {
+                    self.vim_pending.clear();
+                    self.git_hunk(true);
+                    return true;
+                }
+                "SPC g p" => {
+                    self.vim_pending.clear();
+                    self.git_hunk(false);
+                    return true;
+                }
+                "SPC g F" => {
+                    self.vim_pending.clear();
+                    self.git_pull();
+                    return true;
+                }
+                "SPC g P" => {
+                    self.vim_pending.clear();
+                    self.git_push();
+                    return true;
+                }
+                // Project grep moved here to free <leader>g for Git.
+                "SPC p g" => {
                     self.vim_pending.clear();
                     self.project_grep_cmd();
                     return true;
@@ -500,7 +576,7 @@ impl Editor {
                 }
                 // Prefixes that wait for next key:
 
-                "SPC w" | "SPC r" => {
+                "SPC w" | "SPC r" | "SPC g" | "SPC p" => {
                     self.vim_pending = chord;
                     self.say(format!("{} -", self.vim_pending));
                     return true;
@@ -534,7 +610,6 @@ impl Editor {
             "C-a" => {
                 self.mark_whole();
                 self.vim_mode = VimMode::VisualLine;
-                //self.say("-- VISUAL LINE --");
                 return true;
             }
             "C-e" => {
@@ -565,13 +640,11 @@ impl Editor {
             // Enter insert mode:
             "i" => {
                 self.vim_mode = VimMode::Insert;
-                //self.say("-- INSERT --");
                 return true;
             }
             "I" => {
                 self.back_to_indentation();
                 self.vim_mode = VimMode::Insert;
-                //self.say("-- INSERT --");
                 return true;
             }
             "a" => {
@@ -580,27 +653,23 @@ impl Editor {
                     b.cursor.col += 1;
                 }
                 self.vim_mode = VimMode::Insert;
-                //self.say("-- INSERT --");
                 return true;
             }
             "A" => {
                 self.eol();
                 self.vim_mode = VimMode::Insert;
-                //self.say("-- INSERT --");
                 return true;
             }
             "o" => {
                 self.eol();
                 self.newline_indent();
                 self.vim_mode = VimMode::Insert;
-                //self.say("-- INSERT --");
                 return true;
             }
             "O" => {
                 self.bol();
                 self.open_line();
                 self.vim_mode = VimMode::Insert;
-                //self.say("-- INSERT --");
                 return true;
             }
 
@@ -610,7 +679,6 @@ impl Editor {
                 let b = self.buf_mut();
                 b.mark = Some(b.cursor);
                 b.mark_active = true;
-                //self.say("-- VISUAL --");
                 return true;
             }
             "V" => {
@@ -618,7 +686,6 @@ impl Editor {
                 let b = self.buf_mut();
                 b.mark = Some(b.cursor);
                 b.mark_active = true;
-                //self.say("-- VISUAL LINE --");
                 return true;
             }
 
@@ -679,8 +746,6 @@ impl Editor {
             }
             "P" => { self.yank(); return true; }
             "D" => { self.kill_line(); return true; }
-            "C" => { self.kill_line(); self.vim_mode = VimMode::Insert; self.say("-- INSERT --"); return true; }
-            "S" => { self.kill_line(); self.open_line(); self.vim_mode = VimMode::Insert; self.say("-- INSERT --"); return true; }
             "Y" => {
                 self.bol();
                 let at = self.buf().cursor;
@@ -709,7 +774,6 @@ impl Editor {
                 self.vim_pending.clear();
                 self.vim_op = None;
                 self.vim_replace_next = false;
-                //self.say("-- NORMAL --");
                 return true;
             }
             _ => {}

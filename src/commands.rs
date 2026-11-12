@@ -713,7 +713,77 @@ impl Editor {
             }
         }
         by_cmd.sort_by(|a, b| a.0.cmp(b.0));
-        let mut t = String::from("Key bindings (C- = Ctrl, M- = Alt or ESC prefix)\n\n");
+
+        let mut t = String::from("OW Editor — Key bindings\n");
+        t.push_str("C- = Ctrl | M- = Alt (or ESC prefix) | SPC = Space leader\n\n");
+
+        t.push_str("VIM — NORMAL MODE\n");
+        t.push_str("  h / j / k / l       left / down / up / right\n");
+        t.push_str("  w / b / e           next word / previous word / word end\n");
+        t.push_str("  0 / ^ / $           line start / first nonblank / line end\n");
+        t.push_str("  gg / G              buffer start / buffer end\n");
+        t.push_str("  C-f / C-b           page down / page up\n");
+        t.push_str("  i / I               insert at cursor / first nonblank\n");
+        t.push_str("  a / A               append after cursor / end of line\n");
+        t.push_str("  o / O               open line below / above\n");
+        t.push_str("  v / V               visual / visual-line mode\n");
+        t.push_str("  d{motion}           delete (dd, dw, d$)\n");
+        t.push_str("  c{motion}           change (cc, cw, c$)\n");
+        t.push_str("  y{motion}           yank (yy, yw, y$)\n");
+        t.push_str("  x / D / Y           delete char / to line end / yank line\n");
+        t.push_str("  p / P               paste after / before cursor\n");
+        t.push_str("  r{char} / ~         replace char / toggle case\n");
+        t.push_str("  u / C-r             undo / redo\n");
+        t.push_str("  C-a                 select whole buffer (VisualLine)\n");
+        t.push_str("  C-e                 switch buffer\n");
+        t.push_str("  Shift-Left/Right    previous / next buffer\n");
+        t.push_str("  H / L               first nonblank / end of line\n\n");
+
+        t.push_str("VIM — INSERT MODE\n");
+        t.push_str("  ESC                 return to Normal mode\n");
+        t.push_str("  RET                 newline with auto-indent\n");
+        t.push_str("  TAB / S-TAB         indent / unindent\n");
+        t.push_str("  Auto-pairs: parentheses, braces, brackets, quotes and angle brackets\n\n");
+
+        t.push_str("VIM — VISUAL MODE\n");
+        t.push_str("  h / j / k / l       extend selection by character/line\n");
+        t.push_str("  w / b / e           extend by word motions\n");
+        t.push_str("  d / x               delete selection\n");
+        t.push_str("  c                   change selection and enter Insert\n");
+        t.push_str("  y                   yank selection\n");
+        t.push_str("  J / K               move selected lines down / up\n");
+        t.push_str("  v / V / ESC         exit or switch visual mode\n\n");
+
+        t.push_str("LEADER — SPC\n");
+        t.push_str("  SPC f               find file in project\n");
+        t.push_str("  SPC p g             grep in project\n");
+        t.push_str("  SPC e               file explorer (Dired)\n");
+        t.push_str("  SPC t               terminal (reserved)\n");
+        t.push_str("  SPC s               search forward in buffer\n");
+        t.push_str("  SPC x               select directory\n");
+        t.push_str("  SPC q               close current buffer\n");
+        t.push_str("  SPC TAB / SPC S-TAB next / previous buffer\n");
+        t.push_str("  SPC w w             save buffer\n");
+        t.push_str("  SPC w q             close window (or quit if last)\n");
+        t.push_str("  SPC w v / SPC w s   vertical / horizontal split\n");
+        t.push_str("  SPC w h/j/k/l       switch window\n");
+        t.push_str("  SPC <arrows>        resize window\n");
+        t.push_str("  SPC r r             replace word under cursor\n\n");
+
+        t.push_str("LEADER — GIT (SPC g)\n");
+        t.push_str("  SPC g s             repository status\n");
+        t.push_str("  SPC g d / SPC g D   file diff / repository diff\n");
+        t.push_str("  SPC g l / SPC g L   repository log / file log\n");
+        t.push_str("  SPC g b / SPC g B   file blame / line blame\n");
+        t.push_str("  SPC g a / SPC g u   stage / unstage file\n");
+        t.push_str("  SPC g c / SPC g A   commit / amend commit\n");
+        t.push_str("  SPC g o             checkout branch (use -b name to create)\n");
+        t.push_str("  SPC g r             restore file from HEAD (confirmation)\n");
+        t.push_str("  SPC g n / SPC g p   next / previous hunk\n");
+        t.push_str("  SPC g F / SPC g P   pull (fast-forward) / push\n\n");
+
+        t.push_str("EMACS-STYLE COMMANDS (non-navigation)\n");
+        t.push_str("  These Ctrl/Alt bindings remain available outside Vim motions.\n\n");
         for (c, ks) in &by_cmd {
             t.push_str(&format!("  {:<30} {}\n", ks.join(", "), c));
         }
@@ -723,71 +793,44 @@ impl Editor {
                 t.push_str(&format!("  {c}\n"));
             }
         }
-        t.push_str("\nDired buffer (C-x d):\n");
-        t.push_str("  Navigation (vim-style):\n");
-        t.push_str("    j / k / down / up   next / previous line\n");
-        t.push_str("    l / RET / right      open file or enter directory\n");
-        t.push_str("    h / left             go up to parent directory\n");
-        t.push_str("    gg                   top of listing\n");
-        t.push_str("    G                    bottom of listing\n");
-        t.push_str("    C-f / C-d            page down\n");
-        t.push_str("    C-b / C-u            page up\n");
-        t.push_str("  File operations:\n");
-        t.push_str("    %                    create file (append / for directory)\n");
-        t.push_str("    r                    rename / move entry under cursor\n");
-        t.push_str("    d                    delete file or directory (recursive)\n");
-        t.push_str("    c                    copy entry to clipboard\n");
-        t.push_str("    x                    cut (move) entry to clipboard\n");
-        t.push_str("    p                    paste clipboard into current directory\n");
-        t.push_str("  Other:\n");
-        t.push_str("    g                    refresh listing\n");
-        t.push_str("    q                    close dired buffer\n");
-        t.push_str("    SPC ...              leader key (same as normal mode)\n");
-        t.push_str("\nGit status buffer (C-x g):\n");
-        t.push_str("  s / u            stage / unstage entry\n");
-        t.push_str("  RET              visit file\n");
-        t.push_str("  d / D            diff file / diff all\n");
-        t.push_str("  c / C            commit / amend\n");
-        t.push_str("  l                log\n");
-        t.push_str("  b                checkout branch\n");
-        t.push_str("  x                discard changes\n");
-        t.push_str("  P / F            push / pull\n");
-        t.push_str("  g                refresh\n");
-        t.push_str("  q                quit\n");
-        t.push_str("\nGit log buffer: RET show commit.\n");
-        t.push_str("Diff buffers: n / p next / previous hunk.\n");
-        t.push_str("\nISearch (C-s / C-r):\n");
-        t.push_str("  C-s / C-r        search forward / backward (repeat to advance)\n");
-        t.push_str("  DEL              remove last char from query\n");
-        t.push_str("  C-w              append word at point to query\n");
-        t.push_str("  RET              finish search\n");
-        t.push_str("  C-g              cancel and return to origin\n");
-        t.push_str("\nQuery-replace (M-%):\n");
-        t.push_str("  y / SPC          replace this occurrence and advance\n");
-        t.push_str("  n / DEL          skip this occurrence\n");
-        t.push_str("  !                replace all remaining\n");
-        t.push_str("  .                replace this one and stop\n");
-        t.push_str("  q / RET / C-g    quit\n");
-        t.push_str("\nYes/No prompts:\n");
-        t.push_str("  y / Y / SPC      confirm\n");
-        t.push_str("  n / N / C-g / ESC  cancel\n");
-        t.push_str("\nMinibuffer / Prompt:\n");
-        t.push_str("  TAB              complete / next match\n");
-        t.push_str("  S-TAB            previous match\n");
-        t.push_str("  C-n / down       next candidate\n");
-        t.push_str("  up               previous candidate\n");
-        t.push_str("  C-a / home       beginning of input\n");
-        t.push_str("  C-e / end        end of input\n");
-        t.push_str("  C-b / left       backward char\n");
-        t.push_str("  C-f / right      forward char\n");
-        t.push_str("  DEL              delete backward\n");
-        t.push_str("  C-d / delete     delete forward\n");
-        t.push_str("  C-k              kill to end\n");
-        t.push_str("  C-u              clear input\n");
-        t.push_str("  C-w / M-DEL      kill word backward\n");
-        t.push_str("  C-y              yank from kill ring\n");
-        t.push_str("  RET              confirm\n");
-        t.push_str("  C-g / ESC        cancel\n");
+
+        t.push_str("\nDired buffer (C-x d or SPC e):\n");
+        t.push_str("  Navigation: j/k/down/up next/previous line; h/left parent; l/RET/right open\n");
+        t.push_str("  gg / G              top / bottom of listing\n");
+        t.push_str("  C-f / C-d           page down; C-b / C-u page up\n");
+        t.push_str("  %                  create file or directory\n");
+        t.push_str("  r / d              rename / delete entry\n");
+        t.push_str("  c / x / p          copy / cut / paste entry\n");
+        t.push_str("  g / q              refresh / close Dired\n\n");
+
+        t.push_str("Git status buffer (C-x g):\n");
+        t.push_str("  s / u              stage / unstage entry\n");
+        t.push_str("  RET                visit file\n");
+        t.push_str("  d / D              diff file / diff all\n");
+        t.push_str("  c / C              commit / amend\n");
+        t.push_str("  l / b              log / checkout branch\n");
+        t.push_str("  x                  discard changes\n");
+        t.push_str("  P / F              push / pull\n");
+        t.push_str("  g / q              refresh / quit\n");
+        t.push_str("Git log buffer: RET show commit. Diff buffers: n/p next/previous hunk.\n\n");
+
+        t.push_str("ISearch (C-s / C-r):\n");
+        t.push_str("  C-s / C-r          search forward / backward (repeat to advance)\n");
+        t.push_str("  DEL                remove last char from query\n");
+        t.push_str("  C-w                append word at point to query\n");
+        t.push_str("  RET                finish search; C-g cancel\n\n");
+
+        t.push_str("Query-replace (M-%): y/SPC replace; n/DEL skip; ! replace all; ./stop; q/RET/C-g quit\n\n");
+        t.push_str("Minibuffer / Prompt:\n");
+        t.push_str("  TAB / S-TAB        next / previous completion\n");
+        t.push_str("  C-n / down         next candidate; up previous candidate\n");
+        t.push_str("  C-a / home         beginning of input; C-e / end end of input\n");
+        t.push_str("  C-b / left         backward char; C-f / right forward char\n");
+        t.push_str("  DEL / C-d          delete backward / forward\n");
+        t.push_str("  C-k / C-u          kill to end / clear input\n");
+        t.push_str("  C-w / M-DEL        kill word backward; C-y yank\n");
+        t.push_str("  RET                confirm; C-g / ESC cancel\n");
+
         self.open_special("*Help*", BufKind::Help, &t, Vec::new(), false);
     }
 
