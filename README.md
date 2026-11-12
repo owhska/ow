@@ -44,7 +44,7 @@ Emacs-style functionality for operations outside Vim's navigation and modal edit
 - `VISUAL`
 - `VISUAL LINE`
 
-The current mode is displayed in the status line.
+The current mode is displayed in the status line. Vim motions and operators are handled by the modal layer; existing Emacs `C-x` command sequences are preserved. `C-e` is not assigned to a Vim command.
 
 ### Normal mode
 
@@ -59,9 +59,11 @@ The current mode is displayed in the status line.
 | `a` / `A` | Append after cursor / end of line |
 | `o` / `O` | Open line below / above |
 | `v` / `V` | Visual / Visual Line mode |
-| `d{motion}` | Delete (`dd`, `dw`, `d$`) |
-| `c{motion}` | Change (`cc`, `cw`, `c$`) |
-| `y{motion}` | Yank (`yy`, `yw`, `y$`) |
+| `{count}{motion}` | Repeat a motion (`3j`, `2w`, `5G`) |
+| `d/c/y{motion}` | Delete / change / yank (`dd`, `3dw`, `d$`, `dgg`) |
+| `d/c/y i{object}` | Inner text object (`ciw`, `diw`, `yi"`) |
+| `d/c/y a{object}` | Around text object (`daw`, `da"`, `ca(`) |
+| Text objects | `w`, quotes, `()`, `[]`, `{}`, `<>` (same-line pairs) |
 | `x` / `D` / `Y` | Delete character / to line end / yank line |
 | `p` / `P` | Paste after / before cursor |
 | `r{char}` / `~` | Replace character / toggle case |
@@ -114,7 +116,7 @@ Additional existing shortcuts:
 | Key | Action |
 |---|---|
 | `C-p` | Find file in project |
-| `C-e` | Switch buffer |
+| `C-e` | Reserved for the Emacs command layer |
 | `S-Right` / `S-Left` | Next / previous buffer |
 
 ## Git

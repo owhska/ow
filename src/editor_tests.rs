@@ -420,3 +420,33 @@ fn vim_visual_mode_and_move_lines() {
 
     std::fs::remove_dir_all(dir).ok();
 }
+
+
+#[test]
+fn vim_counts_operators_and_text_objects() {
+    let dir = tmpdir("vim-operators");
+    let mut e = editor_in(&dir);
+    keys(&mut e, "one two three four");
+    keys(&mut e, "ESC");
+    keys(&mut e, "0 2dw");
+    assert_eq!(e.buf().lines[0], "three four");
+
+    // Inner-word change and insertion preserve the surrounding whitespace.
+    keys(&mut e, "0ciw");
+    keys(&mut e, "ONE ESC");
+    assert_eq!(e.buf().lines[0], "ONE four");
+}
+
+#[test]
+fn vim_linewise_count_and_gg_g() {
+    let dir = tmpdir("vim-lines");
+    let mut e = editor_in(&dir);
+    keys(&mut e, "one RET two RET three RET four");
+    keys(&mut e, "ESC");
+    keys(&mut e, "2gg");
+    assert_eq!(e.buf().cursor.line, 1);
+    keys(&mut e, "2dd");
+    assert_eq!(e.buf().lines, vec!["one", "four"]);
+    keys(&mut e, "G");
+    assert_eq!(e.buf().cursor.line, 1);
+}

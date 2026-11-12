@@ -722,6 +722,7 @@ impl Editor {
         t.push_str("VIM — NORMAL MODE\n");
         t.push_str("  h / j / k / l       left / down / up / right\n");
         t.push_str("  w / b / e           next word / previous word / word end\n");
+        t.push_str("  {count}{motion}     repeat a motion (3j, 2w, 5G)\n");
         t.push_str("  0 / ^ / $           line start / first nonblank / line end\n");
         t.push_str("  gg / G              buffer start / buffer end\n");
         t.push_str("  C-f / C-b           page down / page up\n");
@@ -729,15 +730,16 @@ impl Editor {
         t.push_str("  a / A               append after cursor / end of line\n");
         t.push_str("  o / O               open line below / above\n");
         t.push_str("  v / V               visual / visual-line mode\n");
-        t.push_str("  d{motion}           delete (dd, dw, d$)\n");
-        t.push_str("  c{motion}           change (cc, cw, c$)\n");
-        t.push_str("  y{motion}           yank (yy, yw, y$)\n");
+        t.push_str("  d/c/y{motion}       delete / change / yank (dd, 3dw, d$, dgg)\n");
+        t.push_str("  d/c/y i{object}     inner object (ciw, diw, yi\")\n");
+        t.push_str("  d/c/y a{object}     around object (daw, da\", ca(), ya[)\n");
+        t.push_str("  Objects: w, \", ', `, (), [], {}, <> (same-line pairs)\n");
         t.push_str("  x / D / Y           delete char / to line end / yank line\n");
         t.push_str("  p / P               paste after / before cursor\n");
         t.push_str("  r{char} / ~         replace char / toggle case\n");
         t.push_str("  u / C-r             undo / redo\n");
         t.push_str("  C-a                 select whole buffer (VisualLine)\n");
-        t.push_str("  C-e                 switch buffer\n");
+        t.push_str("  C-e                 reserved for Emacs bindings\n");
         t.push_str("  Shift-Left/Right    previous / next buffer\n");
         t.push_str("  H / L               first nonblank / end of line\n\n");
 

@@ -426,6 +426,13 @@ impl Editor {
     fn handle_vim_normal(&mut self, key: Key) -> bool {
         let n = key.name.as_str();
 
+        // Vim count prefix (e.g. 3j, 2dw, 4yy). Zero remains a motion.
+        if self.vim_op.is_none() && n.len()==1 && n.chars().next().is_some_and(|c| c.is_ascii_digit() && (c!='0' || self.vim_count>0)) {
+            let digit=n.parse::<usize>().unwrap_or(0);
+            if self.vim_count < 1_000_000 { self.vim_count=self.vim_count.saturating_mul(10).saturating_add(digit); }
+            return true;
+        }
+
         // 1. If replace character is pending: r <char>
         if self.vim_replace_next {
             self.vim_replace_next = false;
@@ -458,120 +465,89 @@ impl Editor {
             return true;
         }
 
-        // 2. If operator pending: d, c, y
+        // 2. Composable Vim operators: d/c/y + motions, counts and text objects.
         if let Some(op) = self.vim_op {
-            self.vim_op = None;
-
-            if op == 'd' || op == 'c' {
-                self.buf_mut().group += 1;
+            if n.len()==1 && n.chars().next().is_some_and(|c| c.is_ascii_digit() && (c!='0' || self.vim_count>0)) {
+                let digit=n.parse::<usize>().unwrap_or(0);
+                if self.vim_count < 1_000_000 { self.vim_count=self.vim_count.saturating_mul(10).saturating_add(digit); }
+                return true;
             }
-
-            match (op, n) {
-                ('d', "d") => {
-                    // Delete the current line safely.
-                    //
-                    // - A non-empty line is cleared with kill_line().
-                    // - If it is not the last line, delete_char() removes the
-                    //   newline, effectively removing the line.
-                    // - An empty non-last line is removed by deleting its
-                    //   newline.
-                    // - An empty last line is removed by deleting the newline
-                    //   before it.
-                    // - A buffer containing only one empty line remains
-                    //   unchanged.
-                    let line_idx = self.buf().cursor.line;
-                    let is_empty = self.buf().line_len(line_idx) == 0;
-                    let is_last = line_idx + 1 >= self.buf().lines.len();
-
-                    if is_empty {
-                        if !is_last {
-                            self.delete_char();
-                        } else if line_idx > 0 {
-                            self.backward_char();
-                            self.delete_char();
-                        }
-                    } else {
-                        self.kill_line();
-
-                        if !is_last {
-                            self.delete_char();
-                        }
+            if n == "ESC" || n == "C-[" {
+                self.vim_op = None;
+                self.vim_pending.clear();
+                self.vim_count = 0;
+                self.vim_operator_count = 0;
+                return true;
+            }
+            if self.vim_pending == "op-g" {
+                self.vim_pending.clear();
+                if n=="g" {
+                    let start=self.buf().cursor;
+                    let end=Pos::new(0,0);
+                    self.vim_apply_operator(op,start,end,true);
+                    self.vim_op=None; self.vim_count=0; self.vim_operator_count=0;
+                } else { self.vim_op=None; self.say("Operator cancelled"); }
+                return true;
+            }
+            if self.vim_pending == "op-i" || self.vim_pending == "op-a" {
+                let around = self.vim_pending == "op-a";
+                self.vim_pending.clear();
+                if let Some((a,z)) = self.vim_object_range(n, around) {
+                    self.vim_apply_operator(op,a,z,false);
+                } else {
+                    self.say("Unsupported text object");
+                }
+                self.vim_op=None;
+                self.vim_count=0;
+                return true;
+            }
+            if n == "i" || n == "a" {
+                self.vim_pending = (if n=="i" {"op-i"} else {"op-a"}).to_string();
+                return true;
+            }
+            if n=="g" {
+                self.vim_pending="op-g".to_string();
+                return true;
+            }
+            let count = self.vim_operator_count.max(1) * self.vim_count.max(1);
+            let start = self.buf().cursor;
+            let mut end = start;
+            let mut linewise = false;
+            if n.len()==1 && n.chars().next()==Some(op) {
+                linewise=true;
+                end=Pos::new((start.line+count-1).min(self.buf().lines.len()-1),0);
+            } else { match n {
+                "w" => end=self.vim_word_forward_pos(start,count),
+                "b" => end=self.vim_word_backward_pos(start,count),
+                "e" => {
+                    end=start;
+                    for _ in 0..count {
+                        self.buf_mut().cursor=end;
+                        self.vim_forward_end_word();
+                        end=self.buf().cursor;
                     }
-
-                    return true;
+                    self.buf_mut().cursor=start;
+                    if let Some(next)=self.buf().next_pos(end) { end=next; }
                 }
-                ('c', "c") => {
-                    self.kill_line();
-                    self.open_line();
-                    self.vim_mode = VimMode::Insert;
-                    return true;
-                }
-                ('y', "y") => {
-                    self.bol();
-
-                    let at = self.buf().cursor;
-                    self.buf_mut().mark = Some(at);
-                    self.buf_mut().mark_active = true;
-
-                    self.eol();
-                    self.copy_region();
-
-                    self.buf_mut().mark_active = false;
-                    self.buf_mut().cursor = at;
-
-                    self.say("1 line yanked");
-                    return true;
-                }
-                ('d', "w") => {
-                    let p = self.buf().cursor;
-                    self.vim_forward_word();
-
-                    let e = self.buf().cursor;
-                    let text = self.buf().text_in(p, e);
-
-                    self.buf_mut().delete(p, e);
-                    self.buf_mut().cursor = p;
-                    self.kill(&text, false);
-
-                    return true;
-                }
-                ('y', "w") => {
-                    let at = self.buf().cursor;
-                    self.buf_mut().mark = Some(at);
-                    self.buf_mut().mark_active = true;
-
-                    self.fwd_word();
-                    self.copy_region();
-
-                    self.buf_mut().mark_active = false;
-                    self.buf_mut().cursor = at;
-
-                    self.say("Word yanked");
-                    return true;
-                }
-                ('d', "$") => {
-                    self.kill_line();
-                    return true;
-                }
-                ('y', "$") => {
-                    let at = self.buf().cursor;
-                    self.buf_mut().mark = Some(at);
-                    self.buf_mut().mark_active = true;
-
-                    self.eol();
-                    self.copy_region();
-
-                    self.buf_mut().mark_active = false;
-                    self.buf_mut().cursor = at;
-
-                    self.say("Yanked to end of line");
-                    return true;
-                }
+                "$" => { linewise=false; end=Pos::new(start.line,(start.line..(start.line+count).min(self.buf().lines.len())).last().map(|l| self.buf().line_len(l)).unwrap_or(start.col)); }
+                "0" | "^" | "_" => { end=Pos::new(start.line, if n=="0" {0} else {self.buf().indent_of(start.line).chars().count()}); }
+                "h" | "<left>" => { for _ in 0..count { if let Some(p)=self.buf().prev_pos(end) {end=p;} } }
+                "l" | "<right>" => { for _ in 0..count { if let Some(p)=self.buf().next_pos(end) {end=p;} } }
+                "j" | "<down>" => { linewise=true; end=Pos::new((start.line+count).min(self.buf().lines.len()-1),start.col); }
+                "k" | "<up>" => { linewise=true; end=Pos::new(start.line.saturating_sub(count),start.col); }
+                "G" => { linewise=true; end=self.buf().end(); }
                 _ => {
-                    self.say("Operator cancelled");
+                    self.vim_op=None; self.vim_pending.clear();
+                    self.vim_count=0; self.vim_operator_count=0;
+                    self.say("Unsupported operator motion");
                     return true;
                 }
-            }
+            }}
+            self.vim_apply_operator(op,start,end,linewise);
+            self.vim_op=None;
+            self.vim_count=0;
+            self.vim_operator_count=0;
+            return true;
         }
 
         // 3. Leader key sequence: SPC ...
@@ -848,7 +824,10 @@ impl Editor {
             self.vim_pending.clear();
 
             if n == "g" {
-                self.bob();
+                let target=if self.vim_count>0 { self.vim_count.saturating_sub(1) } else {0};
+                let last=self.buf().lines.len().saturating_sub(1);
+                self.buf_mut().cursor=Pos::new(target.min(last),0);
+                self.vim_count=0;
                 return true;
             }
         }
@@ -858,10 +837,6 @@ impl Editor {
             "C-a" => {
                 self.mark_whole();
                 self.vim_mode = VimMode::VisualLine;
-                return true;
-            }
-            "C-e" => {
-                self.switch_buffer_cmd();
                 return true;
             }
             "S-<right>" | "S-Right" => {
@@ -884,6 +859,9 @@ impl Editor {
         }
 
         // 5. Normal mode Vim motions and edits.
+        let had_count=self.vim_count>0;
+        let count=self.vim_count.max(1);
+        if self.vim_count>0 { self.vim_count=0; }
         match n {
             // Enter insert mode.
             "i" => {
@@ -948,31 +926,33 @@ impl Editor {
 
             // Motions.
             "h" | "<left>" => {
-                self.backward_char();
+                for _ in 0..count { self.backward_char(); }
                 return true;
             }
             "j" | "<down>" => {
-                self.next_line();
+                for _ in 0..count { self.next_line(); }
                 return true;
             }
             "k" | "<up>" => {
-                self.previous_line();
+                for _ in 0..count { self.previous_line(); }
                 return true;
             }
             "l" | "<right>" => {
-                self.forward_char();
+                for _ in 0..count { self.forward_char(); }
                 return true;
             }
             "w" => {
-                self.vim_forward_word();
+                let p=self.vim_word_forward_pos(self.buf().cursor,count);
+                self.buf_mut().cursor=p;
                 return true;
             }
             "b" => {
-                self.bwd_word();
+                let p=self.vim_word_backward_pos(self.buf().cursor,count);
+                self.buf_mut().cursor=p;
                 return true;
             }
             "e" => {
-                self.vim_forward_end_word();
+                for _ in 0..count { self.vim_forward_end_word(); }
                 return true;
             }
             "C-f" => {
@@ -992,7 +972,11 @@ impl Editor {
                 return true;
             }
             "G" => {
-                self.eob();
+                if had_count {
+                    let line=count.saturating_sub(1).min(self.buf().lines.len()-1);
+                    self.buf_mut().cursor=Pos::new(line,0);
+                } else { self.eob(); }
+                self.vim_count=0;
                 return true;
             }
 
@@ -1075,16 +1059,22 @@ impl Editor {
             // Operator triggers.
             "d" => {
                 self.vim_op = Some('d');
+                self.vim_operator_count=count;
+                self.vim_count=0;
                 self.say("d-");
                 return true;
             }
             "c" => {
                 self.vim_op = Some('c');
+                self.vim_operator_count=count;
+                self.vim_count=0;
                 self.say("c-");
                 return true;
             }
             "y" => {
                 self.vim_op = Some('y');
+                self.vim_operator_count=count;
+                self.vim_count=0;
                 self.say("y-");
                 return true;
             }
@@ -1193,6 +1183,145 @@ impl Editor {
         }
 
         b.modified = true;
+    }
+
+
+    fn vim_word_forward_pos(&self, mut p: Pos, count: usize) -> Pos {
+        let b = self.buf();
+        for _ in 0..count.max(1) {
+            if let Some(c) = b.char_at(p) {
+                if crate::buffer::is_word(c) {
+                    while let Some(c2) = b.char_at(p) {
+                        if !crate::buffer::is_word(c2) { break; }
+                        if let Some(n) = b.next_pos(p) { p = n; } else { break; }
+                    }
+                } else if !c.is_whitespace() {
+                    while let Some(c2) = b.char_at(p) {
+                        if crate::buffer::is_word(c2) || c2.is_whitespace() { break; }
+                        if let Some(n) = b.next_pos(p) { p = n; } else { break; }
+                    }
+                }
+            }
+            while let Some(c) = b.char_at(p) {
+                if !c.is_whitespace() { break; }
+                if let Some(n) = b.next_pos(p) { p = n; } else { break; }
+            }
+        }
+        p
+    }
+
+    fn vim_word_backward_pos(&self, mut p: Pos, count: usize) -> Pos {
+        let b = self.buf();
+        for _ in 0..count.max(1) {
+            if let Some(n) = b.prev_pos(p) { p = n; }
+            while b.char_at(p).is_some_and(|c| c.is_whitespace()) {
+                if let Some(n) = b.prev_pos(p) { p = n; } else { break; }
+            }
+            if b.char_at(p).is_some_and(crate::buffer::is_word) {
+                while let Some(n) = b.prev_pos(p) {
+                    if !b.char_at(n).is_some_and(crate::buffer::is_word) { break; }
+                    p = n;
+                }
+            } else if b.char_at(p).is_some_and(|c| !c.is_whitespace()) {
+                while let Some(n) = b.prev_pos(p) {
+                    if b.char_at(n).is_none_or(|c| c.is_whitespace() || crate::buffer::is_word(c)) { break; }
+                    p = n;
+                }
+            }
+        }
+        p
+    }
+
+    fn vim_object_range(&self, object: &str, around: bool) -> Option<(Pos, Pos)> {
+        let b = self.buf();
+        let p = b.cursor;
+        let line: Vec<char> = b.lines.get(p.line)?.chars().collect();
+        if line.is_empty() { return None; }
+        let pair = match object {
+            "w" => {
+                let mut s = p.col.min(line.len());
+                let mut e = s;
+                if s == line.len() && s > 0 { s -= 1; e = s; }
+                if line.get(s).is_some_and(|&c| crate::buffer::is_word(c)) {
+                    while s > 0 && crate::buffer::is_word(line[s-1]) { s -= 1; }
+                    e = s;
+                    while e < line.len() && crate::buffer::is_word(line[e]) { e += 1; }
+                } else {
+                    while s > 0 && !line[s-1].is_whitespace() && !crate::buffer::is_word(line[s-1]) { s -= 1; }
+                    e = s;
+                    while e < line.len() && !line[e].is_whitespace() && !crate::buffer::is_word(line[e]) { e += 1; }
+                }
+                if around {
+                    while s > 0 && line[s-1].is_whitespace() { s -= 1; }
+                    if e < line.len() && line[e].is_whitespace() {
+                        while e < line.len() && line[e].is_whitespace() { e += 1; }
+                    }
+                }
+                Some((Pos::new(p.line,s), Pos::new(p.line,e)))
+            }
+            "\"" | "'" | "`" | "(" | ")" | "[" | "]" | "{" | "}" | "<" | ">" => {
+                let (open, close) = match object {
+                    "\"" => ('"','"'), "'" => ('\'','\''), "`" => ('`','`'),
+                    "(" | ")" => ('(',')'), "[" | "]" => ('[',']'),
+                    "{" | "}" => ('{','}'), _ => ('<','>')
+                };
+                let mut left = None;
+                let mut right = None;
+                if open == close {
+                    for i in (0..=p.col.min(line.len().saturating_sub(1))).rev() {
+                        if line.get(i)==Some(&open) { left=Some(i); break; }
+                    }
+                    if let Some(s)=left { right=((s+1)..line.len()).find(|&i| line[i]==close); }
+                } else {
+                    let mut depth=0usize;
+                    for i in (0..=p.col.min(line.len().saturating_sub(1))).rev() {
+                        if line[i]==close { depth+=1; }
+                        if line[i]==open {
+                            if depth==0 { left=Some(i); break; } else { depth-=1; }
+                        }
+                    }
+                    if let Some(s)=left {
+                        depth=0;
+                        for i in s+1..line.len() {
+                            if line[i]==open { depth+=1; }
+                            if line[i]==close {
+                                if depth==0 { right=Some(i); break; } else { depth-=1; }
+                            }
+                        }
+                    }
+                }
+                let s=left?;
+                let e=right?;
+                Some((Pos::new(p.line, if around {s} else {s+1}), Pos::new(p.line, if around {e+1} else {e})))
+            }
+            _ => None,
+        }?;
+        Some(pair)
+    }
+
+    fn vim_apply_operator(&mut self, op: char, start: Pos, end: Pos, linewise: bool) {
+        let b = self.buf();
+        let (a, z) = if linewise {
+            let lo = start.line.min(end.line);
+            let hi = start.line.max(end.line);
+            (Pos::new(lo,0), if hi+1 < b.lines.len() { Pos::new(hi+1,0) } else { b.end() })
+        } else {
+            if start <= end {(start,end)} else {(end,start)}
+        };
+        let text = b.text_in(a,z);
+        if op == 'y' {
+            let pk=self.prev_kill; self.prev_kill=false;
+            self.kill(&text,false); self.prev_kill=pk; self.this_kill=false;
+            self.buf_mut().cursor=start;
+            self.say("Yanked");
+        } else {
+            self.buf_mut().group += 1;
+            self.buf_mut().delete(a,z);
+            self.buf_mut().cursor=a;
+            self.buf_mut().mark_active=false;
+            self.kill(&text,false);
+            if op=='c' { self.vim_mode=VimMode::Insert; }
+        }
     }
 
     fn vim_forward_end_word(&mut self) {
