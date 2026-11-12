@@ -1,23 +1,37 @@
-//! Translate crossterm key events into Emacs-style key names ("C-x", "M-f", "RET"...).
+//! Normalize crossterm events into the key names used by the editor.
+//!
+//! This layer is deliberately independent of the editing model: Vim handles
+//! navigation and modal keys, while the command layer handles non-motion
+//! commands. Both consume the same normalized names (for example `C-r`,
+//! `M-x`, `S-TAB`, and `<left>`).
+
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Key {
     pub name: String,
-    /// Set when the key is a plain printable character (self-insert candidate).
+    /// Plain printable character; used for insertion in Insert mode and prompts.
     pub ch: Option<char>,
 }
 
+/// Convert a terminal key event into the editor's canonical key notation.
+///
+/// Key releases are ignored so terminals that report both press and release
+/// do not execute a command twice. Repeated key presses are kept for normal
+/// key-repeat behavior.
 pub fn parse(ev: &KeyEvent) -> Option<Key> {
     if ev.kind == KeyEventKind::Release {
         return None;
     }
-    let m = ev.modifiers;
-    let ctrl = m.contains(KeyModifiers::CONTROL);
-    let alt = m.contains(KeyModifiers::ALT);
-    let shift = m.contains(KeyModifiers::SHIFT);
-    let mut ch = None;
+
+    let modifiers = ev.modifiers;
+    let ctrl = modifiers.contains(KeyModifiers::CONTROL);
+    let alt = modifiers.contains(KeyModifiers::ALT);
+    let shift = modifiers.contains(KeyModifiers::SHIFT);
+
     let mut name = String::new();
+    let mut ch = None;
+
     match ev.code {
         KeyCode::Char(c) => {
             if ctrl {
@@ -26,19 +40,25 @@ pub fn parse(ev: &KeyEvent) -> Option<Key> {
             if alt {
                 name.push_str("M-");
             }
-            let base: String = if ctrl {
+
+            // Terminals differ in how they report Ctrl+Space and Ctrl+_.
+            // Normalize the common representations to one stable spelling.
+            let base = if ctrl {
                 match c {
-                    ' ' | '@' | '2' => "SPC".into(),
-                    // legacy terminals send 0x1f for C-/ and C-_ ; crossterm reports it as '7'
-                    '7' | '_' => "_".into(),
-                    c => c.to_ascii_lowercase().to_string(),
+                    ' ' | '@' | '2' => "SPC".to_string(),
+                    // Some terminals report Ctrl+_ (0x1f) as Ctrl+7.
+                    '7' | '_' => "_".to_string(),
+                    other => other.to_ascii_lowercase().to_string(),
                 }
             } else if c == ' ' {
-                "SPC".into()
+                "SPC".to_string()
             } else {
                 c.to_string()
             };
+
             name.push_str(&base);
+
+            // Modified characters are commands, not text insertion.
             if !ctrl && !alt {
                 ch = Some(c);
             }
@@ -63,6 +83,7 @@ pub fn parse(ev: &KeyEvent) -> Option<Key> {
                 KeyCode::F(n) => format!("<f{n}>"),
                 _ => return None,
             };
+
             if ctrl {
                 name.push_str("C-");
             }
@@ -75,13 +96,15 @@ pub fn parse(ev: &KeyEvent) -> Option<Key> {
             name.push_str(&base);
         }
     }
+
     Some(Key { name, ch })
 }
 
-/// Apply the Meta modifier to an already-named key (used for the ESC prefix).
+/// Add Meta to a key name when ESC was used as a Meta prefix.
 pub fn meta_of(key: &str) -> String {
     match key.strip_prefix("C-") {
         Some(rest) => format!("C-M-{rest}"),
         None => format!("M-{key}"),
     }
 }
+

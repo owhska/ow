@@ -968,7 +968,9 @@ impl Editor {
                     self.normal_key(key);
                 } else if self.special_key(&key.name) {
                     // Handled by special buffer (git status, log, diff, etc.)
-                } else if !self.handle_vim_key(key.clone()) {
+                } else if self.vim_mode == VimMode::Normal && self.handle_vim_page_key(&key.name) {
+                    // Ctrl-B / Ctrl-D are Vim page motions, not Emacs cursor/edit commands.
+                } else if !self.handle_vim_key(key.clone()) && !is_emacs_motion_key(&key.name) {
                     self.normal_key(key);
                 }
             }
@@ -976,6 +978,23 @@ impl Editor {
             Mode::ISearch(s) => self.isearch_key(s, key),
             Mode::QReplace(q) => self.qr_key(q, key),
             Mode::YesNo(y) => self.yesno_key(y, key),
+        }
+    }
+
+    /// Handle Vim's page motions before the Emacs command dispatcher.
+    /// This keeps the two keybinding systems from assigning different
+    /// meanings to the same key in Normal mode.
+    fn handle_vim_page_key(&mut self, name: &str) -> bool {
+        match name {
+            "C-b" | "C-u" => {
+                self.scroll_up();
+                true
+            }
+            "C-d" => {
+                self.scroll_down();
+                true
+            }
+            _ => false,
         }
     }
 
@@ -1081,7 +1100,7 @@ impl Editor {
 
                     if self.vim_mode == VimMode::Normal {
                         self.vim_mode = VimMode::Visual;
-                        self.say("-- VISUAL --");
+                        //self.say("-- VISUAL --");
                         if self.buf().mark.is_none() {
                             let cur = self.buf().cursor;
                             self.buf_mut().mark = Some(cur);
@@ -1797,4 +1816,22 @@ pub fn col_from_display(line: &str, target_d: usize, tab: usize) -> usize {
 
 // ------------------------------------------------------------- commands
 include!("commands.rs");
+/// Emacs-style movement keys are deliberately not dispatched by the
+/// command map: cursor navigation belongs to Vim. Non-movement Emacs
+/// commands (editing, kill ring, mark, buffers, windows, Git, etc.) remain.
+fn is_emacs_motion_key(name: &str) -> bool {
+    matches!(
+        name,
+        "C-n" | "C-p"
+            | "M-f" | "M-b"
+            | "M-<" | "M->"
+            | "C-v" | "M-v"
+            | "M-m" | "M-{" | "M-}"
+            | "C-<left>" | "C-<right>"
+            | "C-<home>" | "C-<end>"
+            | "<pageup>" | "<pagedown>"
+    )
+}
+
 include!("vim.rs");
+

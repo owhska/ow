@@ -103,7 +103,7 @@ impl Editor {
                 if b.cursor.col > 0 {
                     b.cursor.col -= 1;
                 }
-                self.say("-- NORMAL --");
+                //self.say("-- NORMAL --");
                 return true;
             }
             "RET" => {
@@ -198,7 +198,7 @@ impl Editor {
             "ESC" | "C-[" | "C-g" => {
                 self.vim_mode = VimMode::Normal;
                 self.buf_mut().mark_active = false;
-                self.say("-- NORMAL --");
+                //self.say("-- NORMAL --");
                 return true;
             }
             // Move selected lines: K and J as requested
@@ -214,14 +214,14 @@ impl Editor {
             "d" | "x" => {
                 self.delete_visual_selection();
                 self.vim_mode = VimMode::Normal;
-                self.say("-- NORMAL --");
+                //self.say("-- NORMAL --");
                 return true;
             }
             // Change selection:
             "c" => {
                 self.delete_visual_selection();
                 self.vim_mode = VimMode::Insert;
-                self.say("-- INSERT --");
+                //self.say("-- INSERT --");
                 return true;
             }
             // Yank selection:
@@ -243,17 +243,17 @@ impl Editor {
             "V" => {
                 if self.vim_mode == VimMode::VisualLine {
                     self.vim_mode = VimMode::Visual;
-                    self.say("-- VISUAL --");
+                    //self.say("-- VISUAL --");
                 } else {
                     self.vim_mode = VimMode::VisualLine;
-                    self.say("-- VISUAL LINE --");
+                    //self.say("-- VISUAL LINE --");
                 }
                 return true;
             }
             "v" => {
                 self.vim_mode = VimMode::Normal;
                 self.buf_mut().mark_active = false;
-                self.say("-- NORMAL --");
+                //self.say("-- NORMAL --");
                 return true;
             }
             // Movements:
@@ -264,8 +264,9 @@ impl Editor {
             "w" => { self.vim_forward_word(); return true; }
             "b" => { self.bwd_word(); return true; }
             "e" => { self.vim_forward_end_word(); return true; }
-            "C-f" => { self.forward_char(); return true; }
-            "C-b" => { self.backward_char(); return true; }
+            // Page navigation is Vim-owned; never reuse Emacs cursor motions.
+            "C-f" | "C-d" => { self.scroll_down(); return true; }
+            "C-b" | "C-u" => { self.scroll_up(); return true; }
             "0" | "<home>" => { self.bol(); return true; }
             "$" | "<end>" | "L" | "S-l" => { self.eol(); return true; }
             "^" | "H" | "S-h" => { self.back_to_indentation(); return true; }
@@ -322,7 +323,7 @@ impl Editor {
                     self.kill_line();
                     self.open_line();
                     self.vim_mode = VimMode::Insert;
-                    self.say("-- INSERT --");
+                    //self.say("-- INSERT --");
                     return true;
                 }
                 ('y', "y") => {
@@ -533,7 +534,7 @@ impl Editor {
             "C-a" => {
                 self.mark_whole();
                 self.vim_mode = VimMode::VisualLine;
-                self.say("-- VISUAL LINE --");
+                //self.say("-- VISUAL LINE --");
                 return true;
             }
             "C-e" => {
@@ -564,13 +565,13 @@ impl Editor {
             // Enter insert mode:
             "i" => {
                 self.vim_mode = VimMode::Insert;
-                self.say("-- INSERT --");
+                //self.say("-- INSERT --");
                 return true;
             }
             "I" => {
                 self.back_to_indentation();
                 self.vim_mode = VimMode::Insert;
-                self.say("-- INSERT --");
+                //self.say("-- INSERT --");
                 return true;
             }
             "a" => {
@@ -579,27 +580,27 @@ impl Editor {
                     b.cursor.col += 1;
                 }
                 self.vim_mode = VimMode::Insert;
-                self.say("-- INSERT --");
+                //self.say("-- INSERT --");
                 return true;
             }
             "A" => {
                 self.eol();
                 self.vim_mode = VimMode::Insert;
-                self.say("-- INSERT --");
+                //self.say("-- INSERT --");
                 return true;
             }
             "o" => {
                 self.eol();
                 self.newline_indent();
                 self.vim_mode = VimMode::Insert;
-                self.say("-- INSERT --");
+                //self.say("-- INSERT --");
                 return true;
             }
             "O" => {
                 self.bol();
                 self.open_line();
                 self.vim_mode = VimMode::Insert;
-                self.say("-- INSERT --");
+                //self.say("-- INSERT --");
                 return true;
             }
 
@@ -609,7 +610,7 @@ impl Editor {
                 let b = self.buf_mut();
                 b.mark = Some(b.cursor);
                 b.mark_active = true;
-                self.say("-- VISUAL --");
+                //self.say("-- VISUAL --");
                 return true;
             }
             "V" => {
@@ -617,7 +618,7 @@ impl Editor {
                 let b = self.buf_mut();
                 b.mark = Some(b.cursor);
                 b.mark_active = true;
-                self.say("-- VISUAL LINE --");
+                //self.say("-- VISUAL LINE --");
                 return true;
             }
 
@@ -631,12 +632,10 @@ impl Editor {
             "b" => { self.bwd_word(); return true; }
             "e" => { self.vim_forward_end_word(); return true; }
             "C-f" => { self.scroll_down(); return true; }
-            "C-b" => { self.scroll_up(); return true; }
             "0" | "<home>" => { self.bol(); return true; }
             "^" => { self.back_to_indentation(); return true; }
             "$" | "<end>" | "L" | "S-l" => { self.eol(); return true; }
             "G" => { self.eob(); return true; }
-            "C-u" => { self.scroll_up(); return true; }
             "SPC x" => { self.vim_select_directory(); return true; }
 
             // Edits:
@@ -710,13 +709,15 @@ impl Editor {
                 self.vim_pending.clear();
                 self.vim_op = None;
                 self.vim_replace_next = false;
-                self.say("-- NORMAL --");
+                //self.say("-- NORMAL --");
                 return true;
             }
             _ => {}
         }
 
-        // If Ctrl or Alt key combination, pass through to Emacs keymap
+        // Non-motion Ctrl/Alt commands may fall through to the complementary
+        // Emacs command map. Movement keys are filtered by editor.rs so they
+        // cannot acquire a second, conflicting meaning here.
         if n.starts_with("C-") || n.starts_with("M-") {
             return false;
         }
@@ -966,3 +967,4 @@ impl Editor {
     }
 
 }
+
