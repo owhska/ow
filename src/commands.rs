@@ -829,6 +829,7 @@ impl Editor {
         t.push_str("  r / d              rename / delete entry\n");
         t.push_str("  c / x / p          copy / cut / paste entry\n");
         t.push_str("  R / q              refresh / close Dired\n");
+        t.push_str("  mouse click        select entry (double-click opens)\n");
         t.push_str("  Copy is repeatable; cut moves the entry on paste.\n\n");
 
         t.push_str("Git status buffer (C-x g):\n");
@@ -1075,4 +1076,5 @@ pub static BINDINGS: &[(&str, &str)] = &[
 ];
 
 include!("gitcmds.rs");
+
 

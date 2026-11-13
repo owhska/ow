@@ -367,6 +367,7 @@ pub struct Editor {
     pub next_win_id: usize,
     pub win_tree: WindowTree,
     pub vim_mode: VimMode,
+    pub last_click: Option<(Instant, usize, usize)>,
     pub vim_pending: String,
     pub vim_op: Option<char>,
     pub vim_replace_next: bool,
@@ -452,6 +453,7 @@ impl Editor {
             next_win_id: 2,
             win_tree: WindowTree::Leaf(1),
             vim_mode: VimMode::Normal,
+            last_click: None,
             vim_pending: String::new(),
             vim_op: None,
             vim_replace_next: false,
@@ -1314,6 +1316,33 @@ impl Editor {
                     self.next_line();
                 }
             }
+            MouseEventKind::Down(MouseButton::Left) if self.buf().kind == BufKind::Dired => {
+                let text_h = (rect.height as usize).saturating_sub(1);
+                let click_rel_y = (ev.row as usize).saturating_sub(rect.y as usize);
+                if click_rel_y >= text_h {
+                    return;
+                }
+                let line = self.buf().top + click_rel_y;
+                let has_entry = matches!(self.buf().meta.get(line), Some(LineMeta::Path(_)));
+                if !has_entry {
+                    return;
+                }
+                self.buf_mut().cursor = Pos::new(line, 2);
+                self.buf_mut().mark_active = false;
+                let now = Instant::now();
+                let double = matches!(
+                    self.last_click,
+                    Some((t, w, l)) if w == target_win_id && l == line
+                        && now.duration_since(t).as_millis() < 600
+                );
+                if double {
+                    self.last_click = None;
+                    self.visit_line();
+                } else {
+                    self.last_click = Some((now, target_win_id, line));
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) if self.buf().kind == BufKind::Dired => {}
             MouseEventKind::Down(MouseButton::Left) => {
                 let text_h = (rect.height as usize).saturating_sub(1);
                 let click_rel_y = (ev.row as usize).saturating_sub(rect.y as usize);
@@ -2190,4 +2219,5 @@ fn is_emacs_motion_key(name: &str) -> bool {
 }
 
 include!("vim.rs");
+
 
