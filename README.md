@@ -35,6 +35,16 @@ Emacs-style functionality for operations outside Vim's navigation and modal edit
 
 `C-h b` lists the available key bindings.
 
+
+### Additional Vim commands
+
+- `f{char}`, `F{char}`, `t{char}`, `T{char}` find/till a character on the current line; `;` and `,` repeat in the same or reverse direction.
+- `m{a-z}` sets a local mark; `'{a-z}` jumps to its line and `` `{a-z} `` jumps to its exact position.
+- `%` jumps between matching `()`, `[]`, and `{}` delimiters.
+- `n` / `N` repeat the last search forward / backward; `*` / `#` search the word under the cursor.
+- `R` enters overwrite mode; `ESC` returns to Normal mode.
+- `"{register}` selects a named register for the next operator or paste. Registers are held in memory for the current editor session.
+
 ## Vim modal editing
 
 ### Modes

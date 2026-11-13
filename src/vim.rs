@@ -146,6 +146,30 @@ impl Editor {
     fn handle_vim_insert(&mut self, key: Key) -> bool {
         let n = key.name.as_str();
 
+        // Replace mode overwrites existing characters instead of inserting.
+        if self.vim_replace_mode {
+            match n {
+                "ESC" | "C-[" => {
+                    self.vim_replace_mode = false;
+                    self.vim_mode = VimMode::Normal;
+                    if self.buf().cursor.col > 0 { self.buf_mut().cursor.col -= 1; }
+                    return true;
+                }
+                "RET" => { self.newline_indent(); return true; }
+                "DEL" => { self.backward_char(); return true; }
+                _ => if let Some(c) = key.ch {
+                    let b = self.buf_mut();
+                    let at = b.cursor;
+                    if let Some(next) = b.next_pos(at) {
+                        b.group += 1;
+                        b.delete(at, next);
+                    }
+                    b.insert(at, &c.to_string());
+                    return true;
+                }
+            }
+        }
+
         match n {
             "ESC" | "C-[" => {
                 self.vim_mode = VimMode::Normal;
@@ -425,6 +449,81 @@ impl Editor {
     // -------------------------------------------------------- Normal Mode
     fn handle_vim_normal(&mut self, key: Key) -> bool {
         let n = key.name.as_str();
+
+        // Multi-key Vim commands: marks, find motions and register selection.
+        if matches!(self.vim_pending.as_str(), "mark-set" | "mark-jump" | "mark-line" | "find-f" | "find-F" | "find-t" | "find-T" | "register") {
+            let pending = std::mem::take(&mut self.vim_pending);
+            if let Some(c) = key.ch {
+                match pending.as_str() {
+                    "mark-set" if c.is_ascii_lowercase() => { self.vim_marks.insert(c, self.buf().cursor); self.say(format!("Mark {c} set")); }
+                    "mark-jump" | "mark-line" if c.is_ascii_lowercase() => {
+                        if let Some(p) = self.vim_marks.get(&c).copied() {
+                            self.buf_mut().cursor = if pending == "mark-line" { Pos::new(p.line, 0) } else { p };
+                        } else { self.say(format!("Unknown mark: {c}")); }
+                    }
+                    "find-f" | "find-F" | "find-t" | "find-T" => {
+                        let direction = if pending == "find-f" || pending == "find-t" { 1 } else { -1 };
+                        let till = pending == "find-t" || pending == "find-T";
+                        self.vim_last_find = Some((c, if direction > 0 { if till {'t'} else {'f'} } else if till {'T'} else {'F'}));
+                        self.vim_find_char(c, direction, till);
+                    }
+                    "register" => {
+                        if c.is_ascii_alphanumeric() || matches!(c, '+' | '*') { self.vim_register = Some(c); }
+                    }
+                    _ => {}
+                }
+            }
+            return true;
+        }
+
+        if self.vim_replace_mode {
+            match n {
+                "ESC" | "C-[" => { self.vim_replace_mode = false; self.vim_mode = VimMode::Normal; return true; }
+                "RET" => { self.newline_indent(); return true; }
+                "DEL" => { self.backward_char(); return true; }
+                _ => if let Some(c) = key.ch {
+                    let b = self.buf_mut();
+                    let at = b.cursor;
+                    if let Some(next) = b.next_pos(at) { b.group += 1; b.delete(at, next); b.insert(at, &c.to_string()); }
+                    else { b.insert(at, &c.to_string()); }
+                    return true;
+                }
+            }
+        }
+
+        match n {
+            "m" => { self.vim_pending = "mark-set".into(); return true; }
+            "'" => { self.vim_pending = "mark-line".into(); return true; }
+            "`" => { self.vim_pending = "mark-jump".into(); return true; }
+            "\"" => { self.vim_pending = "register".into(); return true; }
+            "f" => { self.vim_pending = "find-f".into(); return true; }
+            "F" => { self.vim_pending = "find-F".into(); return true; }
+            "t" => { self.vim_pending = "find-t".into(); return true; }
+            "T" => { self.vim_pending = "find-T".into(); return true; }
+            ";" => { if let Some((c, kind)) = self.vim_last_find { let dir = if kind == 'f' || kind == 't' {1} else {-1}; self.vim_find_char(c, dir, kind == 't' || kind == 'T'); } return true; }
+            "," => { if let Some((c, kind)) = self.vim_last_find { let dir = if kind == 'f' || kind == 't' {-1} else {1}; self.vim_find_char(c, dir, kind == 't' || kind == 'T'); } return true; }
+            "n" | "N" => {
+                if !self.last_search.is_empty() {
+                    let forward = (n == "n");
+                    let from = self.buf().cursor;
+                    let found = if forward { self.buf().find_forward(from, &self.last_search, true) } else { self.buf().find_backward(from, &self.last_search, true) };
+                    if let Some((a,e)) = found { self.buf_mut().cursor = if forward {a} else {e}; }
+                }
+                return true;
+            }
+            "%" => { self.vim_match_pair(); return true; }
+            "R" => { self.vim_replace_mode = true; self.vim_mode = VimMode::Insert; self.say("REPLACE -- INSERT -- (ESC to exit)"); return true; }
+            "*" | "#" => {
+                if let Some(word) = self.word_under_cursor() {
+                    self.last_search = word.clone();
+                    let from = self.buf().cursor;
+                    let found = if n == "*" { self.buf().find_forward(from, &word, true) } else { self.buf().find_backward(from, &word, true) };
+                    if let Some((a,e)) = found { self.buf_mut().cursor = if n == "*" {a} else {e}; }
+                }
+                return true;
+            }
+            _ => {}
+        }
 
         // Vim count prefix (e.g. 3j, 2dw, 4yy). Zero remains a motion.
         if self.vim_op.is_none() && n.len()==1 && n.chars().next().is_some_and(|c| c.is_ascii_digit() && (c!='0' || self.vim_count>0)) {
@@ -1028,11 +1127,15 @@ impl Editor {
                     b.cursor.col += 1;
                 }
 
-                self.yank();
+                if let Some(reg) = self.vim_register.take() {
+                    if let Some(text) = self.vim_registers.get(&reg).cloned() { self.insert_yank(&text); }
+                } else { self.yank(); }
                 return true;
             }
             "P" => {
-                self.yank();
+                if let Some(reg) = self.vim_register.take() {
+                    if let Some(text) = self.vim_registers.get(&reg).cloned() { self.insert_yank(&text); }
+                } else { self.yank(); }
                 return true;
             }
             "D" => {
@@ -1118,6 +1221,58 @@ impl Editor {
         }
 
         false
+    }
+
+    fn vim_find_char(&mut self, target: char, direction: i32, till: bool) {
+        let b = self.buf();
+        let line: Vec<char> = b.lines.get(b.cursor.line).map(|s| s.chars().collect()).unwrap_or_default();
+        let col = b.cursor.col.min(line.len());
+        let found = if direction > 0 {
+            ((col + 1)..line.len()).find(|&i| line[i] == target)
+        } else {
+            (0..col).rev().find(|&i| line[i] == target)
+        };
+        if let Some(mut i) = found {
+            if till { if direction > 0 { i = i.saturating_sub(1); } else { i = (i + 1).min(line.len().saturating_sub(1)); } }
+            self.buf_mut().cursor.col = i;
+        }
+    }
+
+    fn vim_match_pair(&mut self) {
+        let b = self.buf();
+        let mut p = b.cursor;
+        let pairs = [('(', ')'), ('[', ']'), ('{', '}')];
+        let is_pair = |c: char| pairs.iter().any(|(o, z)| c == *o || c == *z);
+        if !b.char_at(p).is_some_and(is_pair) {
+            let Some(next) = b.next_pos(p) else { return; };
+            p = next;
+        }
+        let mut found = None;
+        for _ in 0..b.lines.iter().map(|l| l.chars().count()).sum::<usize>() {
+            if let Some(c) = b.char_at(p) {
+                if let Some((open, close)) = pairs.iter().find(|(o, c2)| c == *o || c == *c2) {
+                    let forward = c == *open;
+                    let mut depth = 0usize;
+                    let mut q = p;
+                    loop {
+                        if let Some(ch) = b.char_at(q) {
+                            if (forward && ch == *open) || (!forward && ch == *close) { depth += 1; }
+                            if (forward && ch == *close) || (!forward && ch == *open) {
+                                depth = depth.saturating_sub(1);
+                                if depth == 0 { found = Some(q); break; }
+                            }
+                        }
+                        let next = if forward { b.next_pos(q) } else { b.prev_pos(q) };
+                        let Some(next) = next else { break; };
+                        q = next;
+                    }
+                    break;
+                }
+            }
+            let Some(next) = b.next_pos(p) else { break; };
+            p = next;
+        }
+        if let Some(p) = found { self.buf_mut().cursor = p; }
     }
 
     pub fn copy_to_system_clipboard(&mut self) {
@@ -1309,7 +1464,9 @@ impl Editor {
             if start <= end {(start,end)} else {(end,start)}
         };
         let text = b.text_in(a,z);
+        if let Some(reg) = self.vim_register.take() { self.vim_registers.insert(reg, text.clone()); }
         if op == 'y' {
+            self.vim_registers.insert('0', text.clone());
             let pk=self.prev_kill; self.prev_kill=false;
             self.kill(&text,false); self.prev_kill=pk; self.this_kill=false;
             self.buf_mut().cursor=start;

@@ -736,7 +736,13 @@ impl Editor {
         t.push_str("  Objects: w, \", ', `, (), [], {}, <> (same-line pairs)\n");
         t.push_str("  x / D / Y           delete char / to line end / yank line\n");
         t.push_str("  p / P               paste after / before cursor\n");
-        t.push_str("  r{char} / ~         replace char / toggle case\n");
+        t.push_str("  r{char} / R / ~     replace char / replace mode / toggle case\n");
+        t.push_str("  f/F/t/T{char}       find forward/backward / till char; ; and , repeat\n");
+        t.push_str("  m{a-z}, '{a-z}, `{a-z} set/jump to line/jump to exact mark\n");
+        t.push_str("  %                   jump to matching (), [] or {} delimiter\n");
+        t.push_str("  / ? n N             search forward/backward; repeat / reverse repeat\n");
+        t.push_str("  * / #               search word under cursor forward / backward\n");
+        t.push_str("  \"{register}        select named register for next yank/delete/paste\n");
         t.push_str("  u / C-r             undo / redo\n");
         t.push_str("  C-a                 select whole buffer (VisualLine)\n");
         t.push_str("  C-e                 reserved for Emacs bindings\n");
