@@ -25,6 +25,7 @@ pub enum PKind {
     ProjGrep,
     QrFrom,
     QrTo(String),
+    SearchHistory,
     TabWidth,
     SetLang,
     DiredCreate(PathBuf),
@@ -353,6 +354,7 @@ pub enum VimMode {
     Insert,
     Visual,
     VisualLine,
+    VisualBlock,
 }
 
 // ----------------------------------------------------------------- editor
@@ -375,6 +377,12 @@ pub struct Editor {
     pub vim_register: Option<char>,
     pub vim_last_find: Option<(char, char)>,
     pub vim_replace_mode: bool,
+    pub vim_recording_insert: bool,
+    pub vim_insert_record: Vec<Key>,
+    pub vim_last_insert: Vec<Key>,
+    pub vim_insert_prefix: Option<char>,
+    pub vim_last_insert_prefix: Option<char>,
+    pub vim_multi_cursors: Vec<Pos>,
     pub auto_pair: bool,
     pub kill_ring: Vec<String>,
     pub mode: Mode,
@@ -392,6 +400,11 @@ pub struct Editor {
     pub cwd: PathBuf,
     pub proj_root: Option<PathBuf>,
     pub last_search: String,
+    pub last_search_forward: bool,
+    pub recent_files: Vec<PathBuf>,
+    pub bookmarks: Vec<PathBuf>,
+    pub search_history: Vec<String>,
+    pub command_history: Vec<String>,
     last_cmd: String,
     prev_kill: bool,
     pub this_kill: bool,
@@ -449,6 +462,12 @@ impl Editor {
             vim_register: None,
             vim_last_find: None,
             vim_replace_mode: false,
+            vim_recording_insert: false,
+            vim_insert_record: Vec::new(),
+            vim_last_insert: Vec::new(),
+            vim_insert_prefix: None,
+            vim_last_insert_prefix: None,
+            vim_multi_cursors: Vec::new(),
             auto_pair: true,
             kill_ring: Vec::new(),
             mode: Mode::Normal,
@@ -467,6 +486,11 @@ impl Editor {
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             proj_root: None,
             last_search: String::new(),
+            last_search_forward: true,
+            recent_files: Vec::new(),
+            bookmarks: Vec::new(),
+            search_history: Vec::new(),
+            command_history: Vec::new(),
             last_cmd: String::new(),
             prev_kill: false,
             this_kill: false,
@@ -538,6 +562,7 @@ impl Editor {
 
     pub fn open_path(&mut self, path: &Path) -> Result<usize, String> {
         if let Some(i) = self.bufs.iter().position(|b| b.kind == BufKind::File && b.path.as_deref() == Some(path)) {
+            self.remember_recent(path);
             return Ok(i);
         }
         let b = if path.is_dir() {
@@ -556,7 +581,106 @@ impl Editor {
             self.cur = 0;
         }
         self.bufs.push(b);
+        self.remember_recent(path);
         Ok(self.bufs.len() - 1)
+    }
+
+    fn remember_recent(&mut self, path: &Path) {
+        let path = path.to_path_buf();
+        self.recent_files.retain(|p| p != &path);
+        self.recent_files.insert(0, path);
+        self.recent_files.truncate(30);
+        let file = ow_config_dir().join("recent");
+        if let Some(parent) = file.parent() { let _ = std::fs::create_dir_all(parent); }
+        let data = self.recent_files.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>().join("\n");
+        let _ = std::fs::write(file, data);
+    }
+
+    pub fn recent_files_cmd(&mut self) {
+        if self.recent_files.is_empty() {
+            self.recent_files = std::fs::read_to_string(ow_config_dir().join("recent"))
+                .map(|s| s.lines().map(PathBuf::from).filter(|p| p.exists()).collect())
+                .unwrap_or_default();
+        }
+        let choices = self.recent_files.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>();
+        if choices.is_empty() { self.say("No recent files"); return; }
+        self.start_prompt(Prompt::new("Recent file: ", PKind::FindFile, Some(choices)));
+    }
+
+    pub fn bookmark_current_file(&mut self) {
+        let Some(path) = self.buf().path.clone() else { self.say("Current buffer is not a file"); return; };
+        if self.bookmarks.is_empty() {
+            self.bookmarks = std::fs::read_to_string(ow_config_dir().join("bookmarks"))
+                .map(|s| s.lines().map(PathBuf::from).collect()).unwrap_or_default();
+        }
+        if !self.bookmarks.contains(&path) { self.bookmarks.push(path); }
+        let file = ow_config_dir().join("bookmarks");
+        if let Some(parent) = file.parent() { let _ = std::fs::create_dir_all(parent); }
+        let data = self.bookmarks.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>().join("\n");
+        let _ = std::fs::write(file, data);
+        self.say("File bookmarked");
+    }
+
+    pub fn bookmark_list(&mut self) {
+        if self.bookmarks.is_empty() {
+            self.bookmarks = std::fs::read_to_string(ow_config_dir().join("bookmarks"))
+                .map(|s| s.lines().map(PathBuf::from).filter(|p| p.exists()).collect())
+                .unwrap_or_default();
+        }
+        let choices = self.bookmarks.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>();
+        if choices.is_empty() { self.say("No file bookmarks"); return; }
+        self.start_prompt(Prompt::new("Bookmark: ", PKind::FindFile, Some(choices)));
+    }
+
+    pub fn search_history_cmd(&mut self) {
+        if self.search_history.is_empty() {
+            self.search_history = std::fs::read_to_string(ow_config_dir().join("search-history"))
+                .map(|s| s.lines().map(|line| line.to_string()).collect()).unwrap_or_default();
+        }
+        if self.search_history.is_empty() { self.say("No search history"); return; }
+        self.start_prompt(Prompt::new("Search history: ", PKind::SearchHistory, Some(self.search_history.clone())));
+    }
+
+    fn remember_command(&mut self, name: &str) {
+        if name == "self-insert-command" { return; }
+        self.command_history.retain(|item| item != name);
+        self.command_history.insert(0, name.to_string());
+        self.command_history.truncate(50);
+        let file = ow_config_dir().join("command-history");
+        if let Some(parent) = file.parent() { let _ = std::fs::create_dir_all(parent); }
+        let _ = std::fs::write(file, self.command_history.join("\n"));
+    }
+
+    pub fn save_session(&self) {
+        let file = ow_config_dir().join("session");
+        if let Some(parent) = file.parent() { let _ = std::fs::create_dir_all(parent); }
+        let mut rows = Vec::new();
+        for b in &self.bufs {
+            if b.kind == BufKind::File {
+                if let Some(path) = &b.path {
+                    rows.push(format!("{}\t{}\t{}", path.to_string_lossy(), b.cursor.line, b.cursor.col));
+                }
+            }
+        }
+        let _ = std::fs::write(file, rows.join("\n"));
+    }
+
+    pub fn restore_session(&mut self) {
+        let data = match std::fs::read_to_string(ow_config_dir().join("session")) { Ok(s) => s, Err(_) => return };
+        for row in data.lines() {
+            let mut fields = row.rsplitn(3, '\t');
+            let col = fields.next().and_then(|v| v.parse::<usize>().ok()).unwrap_or(0);
+            let line = fields.next().and_then(|v| v.parse::<usize>().ok()).unwrap_or(0);
+            let Some(path) = fields.next() else { continue; };
+            if !Path::new(path).exists() { continue; }
+            if let Ok(i) = self.open_path(Path::new(path)) {
+                self.switch_to(i);
+                let height = self.text_h;
+                let b = self.buf_mut();
+                b.cursor = b.clamp(Pos::new(line, col));
+                b.top = line.saturating_sub(height / 2);
+            }
+        }
     }
 
     pub fn find_file(&mut self, s: &str) {
@@ -1206,7 +1330,7 @@ impl Editor {
                     let target_col = col_from_display(line_str, target_d, b.tab_width);
                     let new_pos = Pos::new(target_line, target_col);
 
-                    if self.vim_mode == VimMode::Visual || self.vim_mode == VimMode::VisualLine {
+                    if self.vim_mode == VimMode::Visual || self.vim_mode == VimMode::VisualLine || self.vim_mode == VimMode::VisualBlock {
                         self.buf_mut().cursor = new_pos;
                     } else {
                         self.buf_mut().cursor = new_pos;
@@ -1327,7 +1451,7 @@ impl Editor {
             self.arg_digits = false;
         }
         let is_ins = name == "self-insert-command";
-        if !(is_ins && self.last_cmd == "self-insert-command") {
+        if !self.buf().is_undo_grouping() && !(is_ins && self.last_cmd == "self-insert-command") {
             self.buf_mut().group += 1;
         }
         if !matches!(name, "next-line" | "previous-line" | "scroll-up-command" | "scroll-down-command") {
@@ -1559,7 +1683,7 @@ impl Editor {
                     self.say(format!("No buffer named {value}"));
                 }
             }
-            PKind::Command => self.run(value.trim()),
+            PKind::Command => { self.remember_command(value.trim()); self.run(value.trim()); },
             PKind::Goto => {
                 let (l, c) = match value.trim().split_once(':') {
                     Some((l, c)) => (l, c.parse::<usize>().unwrap_or(1).saturating_sub(1)),
@@ -1583,6 +1707,14 @@ impl Editor {
                 }
             }
             PKind::QrTo(from) => self.qr_start(from, value),
+            PKind::SearchHistory => {
+                if !value.is_empty() {
+                    self.last_search = value.clone();
+                    self.last_search_forward = true;
+                    let from = self.buf().cursor;
+                    if let Some((a, _)) = self.buf().find_forward(from, &value, true) { self.buf_mut().cursor = a; }
+                }
+            }
             PKind::TabWidth => match value.trim().parse::<usize>() {
                 Ok(n) if (1..=16).contains(&n) => {
                     self.buf_mut().tab_width = n;
@@ -1661,6 +1793,7 @@ impl Editor {
 
     // ---------------------------------------------------------- isearch
     pub fn isearch_start(&mut self, forward: bool) {
+        self.last_search_forward = forward;
         let origin = self.buf().cursor;
         self.mode = Mode::ISearch(ISearch { query: String::new(), forward, origin, matched: None, failing: false });
     }
@@ -1742,8 +1875,15 @@ impl Editor {
     }
 
     fn finish_isearch(&mut self, s: &ISearch) {
+        self.last_search_forward = s.forward;
         if !s.query.is_empty() {
             self.last_search = s.query.clone();
+            self.search_history.retain(|q| q != &s.query);
+            self.search_history.insert(0, s.query.clone());
+            self.search_history.truncate(50);
+            let file = ow_config_dir().join("search-history");
+            if let Some(parent) = file.parent() { let _ = std::fs::create_dir_all(parent); }
+            let _ = std::fs::write(file, self.search_history.join("\n"));
         }
         let b = self.buf_mut();
         if b.cursor != s.origin {
@@ -1922,6 +2062,11 @@ impl Editor {
             Err(e) => self.say(e),
         }
     }
+}
+
+fn ow_config_dir() -> PathBuf {
+    if let Some(path) = std::env::var_os("XDG_CONFIG_HOME") { return PathBuf::from(path).join("ow"); }
+    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("." )).join(".config/ow")
 }
 
 // --------------------------------------------------------------- Dired filesystem helpers

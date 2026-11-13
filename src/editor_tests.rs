@@ -450,3 +450,93 @@ fn vim_linewise_count_and_gg_g() {
     keys(&mut e, "G");
     assert_eq!(e.buf().cursor.line, 1);
 }
+
+
+#[test]
+fn vim_repeat_last_insert_replays_inserted_text() {
+    let dir = tmpdir("vim-dot-repeat");
+    let mut e = Editor::new();
+    e.cwd = dir.clone();
+    keys(&mut e, "iabc ESC");
+    keys(&mut e, "0 iX ESC .");
+    assert_eq!(e.buf().lines[0], "XXabc");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn vim_visual_block_deletes_rectangle() {
+    let dir = tmpdir("vim-block");
+    let mut e = Editor::new();
+    e.cwd = dir.clone();
+    keys(&mut e, "iabc RET def RET ghi ESC gg 0 C-v j l d");
+    assert_eq!(e.buf().lines, vec!["c", "f", "ghi"]);
+    assert_eq!(e.vim_mode, VimMode::Normal);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+
+#[test]
+fn vim_ctrl_n_inserts_at_all_word_occurrences() {
+    let dir = tmpdir("vim-multicursor");
+    let mut e = Editor::new();
+    e.cwd = dir.clone();
+    keys(&mut e, "ifoo SPC foo SPC foo ESC gg 0 C-n X ESC");
+    assert_eq!(e.buf().lines[0], "Xfoo Xfoo Xfoo");
+    assert_eq!(e.vim_mode, VimMode::Normal);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+
+#[test]
+fn vim_insert_session_is_one_undo_step() {
+    let dir = tmpdir("vim-insert-undo");
+    let mut e = Editor::new();
+    e.cwd = dir.clone();
+    keys(&mut e, "ihello world ESC u");
+    assert_eq!(e.buf().lines, vec![""]);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn vim_multiline_delimiter_text_object() {
+    let dir = tmpdir("vim-multiline-object");
+    let mut e = Editor::new();
+    e.cwd = dir.clone();
+    e.buf_mut().set_text("before (\ninside\n)\nafter");
+    e.buf_mut().cursor = Pos::new(1, 1);
+    keys(&mut e, "d i (");
+    assert_eq!(e.buf().lines, vec!["before ()", "after"]);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn vim_resolves_conflict_keeping_ours() {
+    let dir = tmpdir("vim-conflict");
+    let mut e = Editor::new();
+    e.cwd = dir.clone();
+    e.buf_mut().set_text("start\n<<<<<<< ours\nlocal\n=======\nremote\n>>>>>>> theirs\nend");
+    e.buf_mut().cursor = Pos::new(2, 0);
+    keys(&mut e, "SPC g C");
+    assert_eq!(e.buf().lines, vec!["start", "local", "end"]);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn vim_dot_repeats_open_line_change() {
+    let dir = tmpdir("vim-dot-open-line");
+    let mut e = Editor::new();
+    e.cwd = dir.clone();
+    keys(&mut e, "iabc ESC oX ESC .");
+    assert_eq!(e.buf().lines, vec!["abc", "X", "X"]);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn vim_change_operator_and_insert_undo_together() {
+    let dir = tmpdir("vim-change-undo");
+    let mut e = Editor::new();
+    e.cwd = dir.clone();
+    keys(&mut e, "ihello SPC world ESC 0 c w X ESC u");
+    assert_eq!(e.buf().lines, vec!["hello world"]);
+    std::fs::remove_dir_all(dir).ok();
+}

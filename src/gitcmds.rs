@@ -394,6 +394,64 @@ impl Editor {
         }
     }
 
+    // ------------------------------------------------------------- stash
+    fn git_stash_save(&mut self) {
+        let Some(mut repo) = self.need_repo() else { return };
+        let sig = match repo.signature() {
+            Ok(sig) => sig,
+            Err(e) => { self.gerr("stash", e); return; }
+        };
+        match repo.stash_save(&sig, "ow", Some(git2::StashFlags::INCLUDE_UNTRACKED)) {
+            Ok(oid) => {
+                self.revert_unmodified();
+                self.refresh_git_info();
+                self.refresh_status_buf();
+                self.say(format!("Stash saved: {oid}"));
+            }
+            Err(e) => self.gerr("stash save", e),
+        }
+    }
+
+    fn git_stash_apply_latest(&mut self) {
+        let Some(mut repo) = self.need_repo() else { return };
+        let mut indexes = Vec::new();
+        let _ = repo.stash_foreach(|index, _message, _oid| { indexes.push(index); true });
+        let Some(index) = indexes.into_iter().min() else { self.say("No stashes"); return; };
+        match repo.stash_apply(index, None) {
+            Ok(()) => {
+                self.revert_unmodified();
+                self.refresh_git_info();
+                self.refresh_status_buf();
+                self.say(format!("Applied stash@{{{index}}}"));
+            }
+            Err(e) => self.gerr("stash apply", e),
+        }
+    }
+
+    fn git_stash_drop_latest(&mut self) {
+        let Some(mut repo) = self.need_repo() else { return };
+        let mut indexes = Vec::new();
+        let _ = repo.stash_foreach(|index, _message, _oid| { indexes.push(index); true });
+        let Some(index) = indexes.into_iter().min() else { self.say("No stashes"); return; };
+        match repo.stash_drop(index) {
+            Ok(()) => self.say(format!("Dropped stash@{{{index}}}")),
+            Err(e) => self.gerr("stash drop", e),
+        }
+    }
+
+    fn git_stash_list(&mut self) {
+        let Some(mut repo) = self.need_repo() else { return };
+        let mut entries = Vec::new();
+        let _ = repo.stash_foreach(|index, message, oid| {
+            entries.push(format!("stash@{{{index}}}  {oid}  {message}"));
+            true
+        });
+        if entries.is_empty() { self.say("No stashes"); return; }
+        entries.reverse();
+        let text = format!("Git stashes\n\n{}\n", entries.join("\n"));
+        self.open_special("*git-stash*", BufKind::GitLog, &text, Vec::new(), false);
+    }
+
     // ---------------------------------------------------------- branches
     fn git_checkout_cmd(&mut self) {
         let Some(repo) = self.need_repo() else { return };

@@ -281,6 +281,10 @@ fn render_window(
                         line_length,
                         Style::default().bg(c(SEL)),
                     ));
+                } else if editor.vim_mode == VimMode::VisualBlock {
+                    let left = buffer.mark.map(|m| m.col).unwrap_or(start.col).min(buffer.cursor.col);
+                    let right = buffer.mark.map(|m| m.col).unwrap_or(start.col).max(buffer.cursor.col).saturating_add(1);
+                    overlays.push((left.min(line_length), right.min(line_length), Style::default().bg(c(SEL))));
                 } else if editor.vim_mode == VimMode::Visual {
                     // Character-wise Visual mode: highlight only from the
                     // selection start column to the cursor column.
@@ -303,6 +307,14 @@ fn render_window(
                             Style::default().bg(c(SEL)),
                         ));
                     }
+                }
+            }
+        }
+
+        if is_active && editor.vim_mode == VimMode::Insert {
+            for pos in &editor.vim_multi_cursors {
+                if pos.line == line_index && pos.col < line_length {
+                    overlays.push((pos.col, pos.col + 1, Style::default().bg(c(WARN)).fg(Color::Black)));
                 }
             }
         }
@@ -378,6 +390,7 @@ fn render_window(
             VimMode::Insert => "[INSERT] ",
             VimMode::Visual => "[VISUAL] ",
             VimMode::VisualLine => "[V-LINE] ",
+            VimMode::VisualBlock => "[V-BLOCK] ",
         }
     } else {
         ""

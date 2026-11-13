@@ -100,6 +100,8 @@ fn main() -> io::Result<()> {
     }
 
     let mut ed = Editor::new();
+    let has_files = args.iter().any(|a| !a.starts_with('+'));
+    if !has_files { ed.restore_session(); }
     let mut line: Option<usize> = None;
     let mut first = true;
     for a in &args {
@@ -128,6 +130,7 @@ fn main() -> io::Result<()> {
     let mut term = ratatui::init();
     let _ = execute!(io::stdout(), EnableBracketedPaste, EnableMouseCapture);
     let res = run(&mut term, &mut ed);
+    ed.save_session();
     let _ = execute!(io::stdout(), DisableBracketedPaste, DisableMouseCapture);
     ratatui::restore();
     res

@@ -138,13 +138,47 @@ impl Editor {
         match self.vim_mode {
             VimMode::Normal => self.handle_vim_normal(key),
             VimMode::Insert => self.handle_vim_insert(key),
-            VimMode::Visual | VimMode::VisualLine => self.handle_vim_visual(key),
+            VimMode::Visual | VimMode::VisualLine | VimMode::VisualBlock => self.handle_vim_visual(key),
         }
     }
 
     // -------------------------------------------------------- Insert Mode
+    fn vim_begin_insert_recording(&mut self, prefix: Option<char>) {
+        self.vim_mode = VimMode::Insert;
+        self.vim_recording_insert = true;
+        self.vim_insert_record.clear();
+        self.vim_insert_prefix = prefix;
+        self.buf_mut().begin_undo_group();
+    }
+
     fn handle_vim_insert(&mut self, key: Key) -> bool {
         let n = key.name.as_str();
+        if self.vim_recording_insert && !matches!(n, "ESC" | "C-[")
+            && (key.ch.is_some() || matches!(n, "SPC" | "RET" | "DEL" | "TAB" | "S-TAB"))
+        {
+            self.vim_insert_record.push(key.clone());
+        }
+
+        if !self.vim_multi_cursors.is_empty() {
+            if let Some(c) = key.ch.or_else(|| if n == "SPC" { Some(' ') } else { None }) {
+                let mut positions = self.vim_multi_cursors.clone();
+                positions.push(self.buf().cursor);
+                positions.sort();
+                positions.dedup();
+                let main = self.buf().cursor;
+                let b = self.buf_mut();
+                for pos in positions.iter().rev() { b.insert(*pos, &c.to_string()); }
+                let shifted = |pos: Pos| {
+                    let before = positions.iter().filter(|p| p.line == pos.line && p.col <= pos.col).count();
+                    Pos::new(pos.line, pos.col + before)
+                };
+                let new_main = shifted(main);
+                self.vim_multi_cursors = positions.iter().filter(|p| **p != main).map(|p| shifted(*p)).collect();
+                self.buf_mut().cursor = new_main;
+                return true;
+            }
+            if !matches!(n, "ESC" | "C-[") { self.vim_multi_cursors.clear(); }
+        }
 
         // Replace mode overwrites existing characters instead of inserting.
         if self.vim_replace_mode {
@@ -152,6 +186,14 @@ impl Editor {
                 "ESC" | "C-[" => {
                     self.vim_replace_mode = false;
                     self.vim_mode = VimMode::Normal;
+                    if self.vim_recording_insert {
+                        self.buf_mut().end_undo_group();
+                        self.vim_recording_insert = false;
+                        if !self.vim_insert_record.is_empty() || self.vim_insert_prefix.is_some() {
+                            self.vim_last_insert = std::mem::take(&mut self.vim_insert_record);
+                            self.vim_last_insert_prefix = self.vim_insert_prefix.take();
+                        }
+                    }
                     if self.buf().cursor.col > 0 { self.buf_mut().cursor.col -= 1; }
                     return true;
                 }
@@ -161,7 +203,6 @@ impl Editor {
                     let b = self.buf_mut();
                     let at = b.cursor;
                     if let Some(next) = b.next_pos(at) {
-                        b.group += 1;
                         b.delete(at, next);
                     }
                     b.insert(at, &c.to_string());
@@ -173,6 +214,17 @@ impl Editor {
         match n {
             "ESC" | "C-[" => {
                 self.vim_mode = VimMode::Normal;
+                self.vim_multi_cursors.clear();
+                if self.vim_recording_insert {
+                    self.buf_mut().end_undo_group();
+                    self.vim_recording_insert = false;
+                    if !self.vim_insert_record.is_empty() || self.vim_insert_prefix.is_some() {
+                        self.vim_last_insert = std::mem::take(&mut self.vim_insert_record);
+                        self.vim_last_insert_prefix = self.vim_insert_prefix.take();
+                    } else {
+                        self.vim_insert_prefix = None;
+                    }
+                }
                 let b = self.buf_mut();
                 if b.cursor.col > 0 {
                     b.cursor.col -= 1;
@@ -210,7 +262,6 @@ impl Editor {
                             let at = Pos::new(b.cursor.line, col - 1);
                             let end = Pos::new(b.cursor.line, col + 1);
 
-                            b.group += 1;
                             b.delete(at, end);
                             b.cursor = at;
 
@@ -333,8 +384,6 @@ impl Editor {
 
     fn insert_pair(&mut self, pair: &str) {
         let b = self.buf_mut();
-        b.group += 1;
-
         let at = b.cursor;
         b.insert(at, pair);
         b.cursor.col += 1;
@@ -345,6 +394,9 @@ impl Editor {
         let n = key.name.as_str();
 
         match n {
+            "v" if self.vim_mode == VimMode::VisualBlock => { self.vim_mode = VimMode::Visual; return true; }
+            "V" if self.vim_mode == VimMode::VisualBlock => { self.vim_mode = VimMode::VisualLine; return true; }
+            "C-v" if self.vim_mode == VimMode::VisualBlock => { self.vim_mode = VimMode::Visual; return true; }
             "ESC" | "C-[" | "C-g" => {
                 self.vim_mode = VimMode::Normal;
                 self.buf_mut().mark_active = false;
@@ -363,21 +415,33 @@ impl Editor {
 
             // Delete selection.
             "d" | "x" => {
-                self.delete_visual_selection();
+                if self.vim_mode == VimMode::VisualBlock { self.vim_block_delete(false); }
+                else { self.delete_visual_selection(); }
                 self.vim_mode = VimMode::Normal;
                 return true;
             }
 
             // Change selection.
             "c" => {
-                self.delete_visual_selection();
-                self.vim_mode = VimMode::Insert;
+                if self.vim_mode == VimMode::VisualBlock {
+                    let bounds = self.vim_block_bounds();
+                    self.buf_mut().begin_undo_group();
+                    self.vim_block_delete(true);
+                    if let Some((lo, hi, left, _)) = bounds {
+                        self.vim_multi_cursors = (lo + 1..=hi).map(|line| Pos::new(line, left.min(self.buf().line_len(line)))).collect();
+                    }
+                } else {
+                    self.buf_mut().begin_undo_group();
+                    self.delete_visual_selection();
+                }
+                self.vim_begin_insert_recording(None);
                 return true;
             }
 
             // Yank selection.
             "y" => {
-                self.yank_visual_selection();
+                if self.vim_mode == VimMode::VisualBlock { self.vim_block_yank(); }
+                else { self.yank_visual_selection(); }
                 self.vim_mode = VimMode::Normal;
                 self.copy_to_system_clipboard();
                 return true;
@@ -450,6 +514,14 @@ impl Editor {
     fn handle_vim_normal(&mut self, key: Key) -> bool {
         let n = key.name.as_str();
 
+        // Conflict navigation: ]c / [c.
+        if self.vim_pending == "]" || self.vim_pending == "[" {
+            let forward = self.vim_pending == "]";
+            self.vim_pending.clear();
+            if n == "c" { self.vim_jump_conflict(forward); }
+            return true;
+        }
+
         // Multi-key Vim commands: marks, find motions and register selection.
         if matches!(self.vim_pending.as_str(), "mark-set" | "mark-jump" | "mark-line" | "find-f" | "find-F" | "find-t" | "find-T" | "register") {
             let pending = std::mem::take(&mut self.vim_pending);
@@ -492,6 +564,7 @@ impl Editor {
         }
 
         match n {
+            "]" | "[" => { self.vim_pending = n.to_string(); return true; }
             "m" => { self.vim_pending = "mark-set".into(); return true; }
             "'" => { self.vim_pending = "mark-line".into(); return true; }
             "`" => { self.vim_pending = "mark-jump".into(); return true; }
@@ -504,7 +577,7 @@ impl Editor {
             "," => { if let Some((c, kind)) = self.vim_last_find { let dir = if kind == 'f' || kind == 't' {-1} else {1}; self.vim_find_char(c, dir, kind == 't' || kind == 'T'); } return true; }
             "n" | "N" => {
                 if !self.last_search.is_empty() {
-                    let forward = (n == "n");
+                    let forward = if n == "n" { self.last_search_forward } else { !self.last_search_forward };
                     let from = self.buf().cursor;
                     let found = if forward { self.buf().find_forward(from, &self.last_search, true) } else { self.buf().find_backward(from, &self.last_search, true) };
                     if let Some((a,e)) = found { self.buf_mut().cursor = if forward {a} else {e}; }
@@ -512,10 +585,13 @@ impl Editor {
                 return true;
             }
             "%" => { self.vim_match_pair(); return true; }
-            "R" => { self.vim_replace_mode = true; self.vim_mode = VimMode::Insert; self.say("REPLACE -- INSERT -- (ESC to exit)"); return true; }
+            "R" => { self.vim_begin_insert_recording(Some('R')); self.vim_replace_mode = true; self.say("REPLACE -- INSERT -- (ESC to exit)"); return true; }
+            "C-n" => { self.vim_select_all_occurrences(); return true; }
+            "." => { self.vim_repeat_last_insert(); return true; }
             "*" | "#" => {
                 if let Some(word) = self.word_under_cursor() {
                     self.last_search = word.clone();
+                    self.last_search_forward = n == "*";
                     let from = self.buf().cursor;
                     let found = if n == "*" { self.buf().find_forward(from, &word, true) } else { self.buf().find_backward(from, &word, true) };
                     if let Some((a,e)) = found { self.buf_mut().cursor = if n == "*" {a} else {e}; }
@@ -660,6 +736,10 @@ impl Editor {
                     self.project_find_file();
                     return true;
                 }
+                "SPC r f" => { self.vim_pending.clear(); self.recent_files_cmd(); return true; }
+                "SPC r s" => { self.vim_pending.clear(); self.search_history_cmd(); return true; }
+                "SPC b m" => { self.vim_pending.clear(); self.bookmark_current_file(); return true; }
+                "SPC b b" => { self.vim_pending.clear(); self.bookmark_list(); return true; }
 
                 // Git namespace: <leader>g ...
                 "SPC g s" => {
@@ -747,6 +827,12 @@ impl Editor {
                     self.git_push();
                     return true;
                 }
+                "SPC g z" => { self.vim_pending.clear(); self.git_stash_save(); return true; }
+                "SPC g Z" => { self.vim_pending.clear(); self.git_stash_apply_latest(); return true; }
+                "SPC g X" => { self.vim_pending.clear(); self.git_stash_drop_latest(); return true; }
+                "SPC g S" => { self.vim_pending.clear(); self.git_stash_list(); return true; }
+                "SPC g C" => { self.vim_pending.clear(); self.vim_resolve_conflict(true); return true; }
+                "SPC g T" => { self.vim_pending.clear(); self.vim_resolve_conflict(false); return true; }
 
                 // Project grep moved here to free <leader>g for Git.
                 "SPC p g" => {
@@ -890,7 +976,7 @@ impl Editor {
                 }
 
                 // Prefixes that wait for the next key.
-                "SPC w" | "SPC r" | "SPC g" | "SPC p" => {
+                "SPC w" | "SPC r" | "SPC g" | "SPC p" | "SPC b" => {
                     self.vim_pending = chord;
                     self.say(format!("{} -", self.vim_pending));
                     return true;
@@ -964,12 +1050,12 @@ impl Editor {
         match n {
             // Enter insert mode.
             "i" => {
-                self.vim_mode = VimMode::Insert;
+                self.vim_begin_insert_recording(Some('i'));
                 return true;
             }
             "I" => {
                 self.back_to_indentation();
-                self.vim_mode = VimMode::Insert;
+                self.vim_begin_insert_recording(Some('I'));
                 return true;
             }
             "a" => {
@@ -979,24 +1065,24 @@ impl Editor {
                     b.cursor.col += 1;
                 }
 
-                self.vim_mode = VimMode::Insert;
+                self.vim_begin_insert_recording(Some('a'));
                 return true;
             }
             "A" => {
                 self.eol();
-                self.vim_mode = VimMode::Insert;
+                self.vim_begin_insert_recording(Some('A'));
                 return true;
             }
             "o" => {
                 self.eol();
+                self.vim_begin_insert_recording(Some('o'));
                 self.newline_indent();
-                self.vim_mode = VimMode::Insert;
                 return true;
             }
             "O" => {
                 self.bol();
+                self.vim_begin_insert_recording(Some('O'));
                 self.open_line();
-                self.vim_mode = VimMode::Insert;
                 return true;
             }
 
@@ -1011,6 +1097,14 @@ impl Editor {
                 b.mark = Some(b.cursor);
                 b.mark_active = true;
 
+                return true;
+            }
+            "C-v" => {
+                self.vim_mode = VimMode::VisualBlock;
+                let b = self.buf_mut();
+                b.mark = Some(b.cursor);
+                b.mark_active = true;
+                self.say("-- VISUAL BLOCK --");
                 return true;
             }
             "V" => {
@@ -1128,13 +1222,17 @@ impl Editor {
                 }
 
                 if let Some(reg) = self.vim_register.take() {
-                    if let Some(text) = self.vim_registers.get(&reg).cloned() { self.insert_yank(&text); }
+                    let text = if matches!(reg, '+' | '*') { crate::clipboard::get_clipboard() }
+                        else { self.vim_registers.get(&reg).cloned() };
+                    if let Some(text) = text { self.insert_yank(&text); }
                 } else { self.yank(); }
                 return true;
             }
             "P" => {
                 if let Some(reg) = self.vim_register.take() {
-                    if let Some(text) = self.vim_registers.get(&reg).cloned() { self.insert_yank(&text); }
+                    let text = if matches!(reg, '+' | '*') { crate::clipboard::get_clipboard() }
+                        else { self.vim_registers.get(&reg).cloned() };
+                    if let Some(text) = text { self.insert_yank(&text); }
                 } else { self.yank(); }
                 return true;
             }
@@ -1151,6 +1249,8 @@ impl Editor {
 
                 self.eol();
                 self.copy_region();
+                let yanked = self.buf().text_in(at, self.buf().cursor);
+                self.vim_registers.insert('0', yanked);
 
                 self.buf_mut().mark_active = false;
                 self.buf_mut().cursor = at;
@@ -1221,6 +1321,162 @@ impl Editor {
         }
 
         false
+    }
+
+    fn vim_select_all_occurrences(&mut self) {
+        let Some(word) = self.word_under_cursor() else { self.say("No word under cursor"); return; };
+        let line_no = self.buf().cursor.line;
+        let line = self.buf().lines[line_no].clone();
+        let chars: Vec<char> = line.chars().collect();
+        let mut start_col = self.buf().cursor.col.min(chars.len());
+        while start_col > 0 && crate::buffer::is_word(chars[start_col - 1]) { start_col -= 1; }
+        let mut matches = Vec::new();
+        for (li, text) in self.buf().lines.iter().enumerate() {
+            let chars: Vec<char> = text.chars().collect();
+            let mut col = 0usize;
+            while col + word.chars().count() <= chars.len() {
+                let end = col + word.chars().count();
+                if chars[col..end].iter().copied().collect::<String>() == word
+                    && (col == 0 || !crate::buffer::is_word(chars[col - 1]))
+                    && (end == chars.len() || !crate::buffer::is_word(chars[end]))
+                { matches.push(Pos::new(li, col)); col = end; }
+                else { col += 1; }
+            }
+        }
+        let current = Pos::new(line_no, start_col);
+        self.vim_multi_cursors = matches.into_iter().filter(|p| *p != current).collect();
+        if self.vim_multi_cursors.is_empty() { self.say("No other occurrences"); return; }
+        self.buf_mut().cursor = current;
+        self.vim_begin_insert_recording(None);
+        self.say(format!("{} cursors — type to edit all", self.vim_multi_cursors.len() + 1));
+    }
+
+    fn vim_repeat_last_insert(&mut self) {
+        let prefix = self.vim_last_insert_prefix;
+        let keys = self.vim_last_insert.clone();
+        if keys.is_empty() && prefix.is_none() { self.say("No change to repeat"); return; }
+        self.vim_recording_insert = false;
+        self.buf_mut().begin_undo_group();
+        match prefix {
+            Some('I') => self.back_to_indentation(),
+            Some('a') => { let b = self.buf_mut(); if b.cursor.col < b.line_len(b.cursor.line) { b.cursor.col += 1; } },
+            Some('A') => self.eol(),
+            Some('o') => { self.eol(); self.newline_indent(); },
+            Some('O') => { self.bol(); self.open_line(); },
+            Some('R') => { self.vim_replace_mode = true; },
+            _ => {}
+        }
+        self.vim_mode = VimMode::Insert;
+        for key in keys {
+            if !self.handle_vim_insert(key.clone()) { self.normal_key(key); }
+        }
+        self.buf_mut().end_undo_group();
+        self.vim_replace_mode = false;
+        self.vim_mode = VimMode::Normal;
+        if self.buf().cursor.col > 0 { self.buf_mut().cursor.col -= 1; }
+    }
+
+    fn vim_block_bounds(&self) -> Option<(usize, usize, usize, usize)> {
+        let mark = self.buf().mark?;
+        let cur = self.buf().cursor;
+        Some((mark.line.min(cur.line), mark.line.max(cur.line), mark.col.min(cur.col), mark.col.max(cur.col)))
+    }
+
+    fn vim_block_yank(&mut self) {
+        let Some((lo, hi, left, right)) = self.vim_block_bounds() else { return; };
+        let b = self.buf();
+        let mut rows = Vec::new();
+        for line in lo..=hi {
+            let chars: Vec<char> = b.lines[line].chars().collect();
+            let start = left.min(chars.len());
+            let end = (right + 1).min(chars.len());
+            rows.push(chars[start..end].iter().copied().collect::<String>());
+        }
+        let text = rows.join("\n");
+        self.vim_registers.insert('0', text.clone());
+        if let Some(reg) = self.vim_register.take() {
+            self.vim_registers.insert(reg, text.clone());
+            if matches!(reg, '+' | '*') { crate::clipboard::set_clipboard(&text); }
+        }
+        crate::clipboard::set_clipboard(&text);
+        self.kill(&text, false);
+        self.buf_mut().mark_active = false;
+        self.say("Block yanked");
+    }
+
+    fn vim_block_delete(&mut self, _change: bool) {
+        let Some((lo, hi, left, right)) = self.vim_block_bounds() else { return; };
+        let mut rows = Vec::new();
+        for line in lo..=hi {
+            let chars: Vec<char> = self.buf().lines[line].chars().collect();
+            let start = left.min(chars.len());
+            let end = (right + 1).min(chars.len());
+            rows.push(chars[start..end].iter().copied().collect::<String>());
+        }
+        let text = rows.join("\n");
+        if let Some(reg) = self.vim_register.take() {
+            self.vim_registers.insert(reg, text.clone());
+            if matches!(reg, '+' | '*') { crate::clipboard::set_clipboard(&text); }
+        }
+        for n in (2..=9).rev() {
+            if let Some(prev) = self.vim_registers.get(&(char::from_digit(n - 1, 10).unwrap())).cloned() {
+                self.vim_registers.insert(char::from_digit(n, 10).unwrap(), prev);
+            }
+        }
+        self.vim_registers.insert('1', text.clone());
+        let b = self.buf_mut();
+        if !_change { b.begin_undo_group(); }
+        for line in (lo..=hi).rev() {
+            let len = b.line_len(line);
+            let start = left.min(len);
+            let end = (right + 1).min(len);
+            if start < end { b.delete(Pos::new(line, start), Pos::new(line, end)); }
+        }
+        b.cursor = Pos::new(lo, left.min(b.line_len(lo)));
+        b.mark_active = false;
+        if !_change { b.end_undo_group(); }
+        self.kill(&text, false);
+        self.say("Block deleted");
+    }
+
+    fn vim_resolve_conflict(&mut self, keep_ours: bool) {
+        let cur = self.buf().cursor.line;
+        let lines = &self.buf().lines;
+        let mut block = None;
+        for start in 0..lines.len() {
+            if !lines[start].starts_with("<<<<<<< ") { continue; }
+            let Some(sep) = (start + 1..lines.len()).find(|&i| lines[i].starts_with("=======")) else { continue; };
+            let Some(end) = (sep + 1..lines.len()).find(|&i| lines[i].starts_with(">>>>>>> ")) else { continue; };
+            if cur >= start && cur <= end { block = Some((start, sep, end)); break; }
+        }
+        let Some((start, sep, end)) = block else { self.say("No conflict at point"); return; };
+        let mut selected = if keep_ours { lines[start + 1..sep].join("\n") } else { lines[sep + 1..end].join("\n") };
+        if end + 1 < lines.len() { selected.push('\n'); }
+        let start_pos = Pos::new(start, 0);
+        let end_pos = if end + 1 < lines.len() { Pos::new(end + 1, 0) } else { self.buf().end() };
+        let b = self.buf_mut();
+        b.begin_undo_group();
+        b.delete(start_pos, end_pos);
+        b.insert(start_pos, &selected);
+        b.cursor = start_pos;
+        b.mark_active = false;
+        b.modified = true;
+        b.end_undo_group();
+        self.say(if keep_ours { "Kept current change" } else { "Kept incoming change" });
+    }
+
+    fn vim_jump_conflict(&mut self, forward: bool) {
+        let b = self.buf();
+        let cur = b.cursor.line;
+        let target = if forward {
+            (cur + 1..b.lines.len()).find(|&i| b.lines[i].starts_with("<<<<<<< "))
+        } else {
+            (0..cur).rev().find(|&i| b.lines[i].starts_with("<<<<<<< "))
+        };
+        if let Some(line) = target {
+            self.buf_mut().cursor = Pos::new(line, 0);
+            self.say("Conflict marker");
+        } else { self.say("No more conflict markers"); }
     }
 
     fn vim_find_char(&mut self, target: char, direction: i32, till: bool) {
@@ -1391,8 +1647,19 @@ impl Editor {
         let b = self.buf();
         let p = b.cursor;
         let line: Vec<char> = b.lines.get(p.line)?.chars().collect();
-        if line.is_empty() { return None; }
+        if line.is_empty() && object != "p" { return None; }
         let pair = match object {
+            "p" => {
+                let mut first = p.line;
+                let mut last = p.line;
+                while first > 0 && !b.lines[first - 1].trim().is_empty() { first -= 1; }
+                while last + 1 < b.lines.len() && !b.lines[last + 1].trim().is_empty() { last += 1; }
+                if around {
+                    if last + 1 < b.lines.len() && b.lines[last + 1].trim().is_empty() { last += 1; }
+                    else if first > 0 && b.lines[first - 1].trim().is_empty() { first -= 1; }
+                }
+                Some((Pos::new(first, 0), if last + 1 < b.lines.len() { Pos::new(last + 1, 0) } else { b.end() }))
+            }
             "w" => {
                 let mut s = p.col.min(line.len());
                 let mut e = s;
@@ -1416,38 +1683,49 @@ impl Editor {
             }
             "\"" | "'" | "`" | "(" | ")" | "[" | "]" | "{" | "}" | "<" | ">" => {
                 let (open, close) = match object {
-                    "\"" => ('"','"'), "'" => ('\'','\''), "`" => ('`','`'),
+                    "\"" => ('\"','\"'), "'" => ('\'','\''), "`" => ('`','`'),
                     "(" | ")" => ('(',')'), "[" | "]" => ('[',']'),
                     "{" | "}" => ('{','}'), _ => ('<','>')
                 };
-                let mut left = None;
-                let mut right = None;
-                if open == close {
-                    for i in (0..=p.col.min(line.len().saturating_sub(1))).rev() {
-                        if line.get(i)==Some(&open) { left=Some(i); break; }
-                    }
-                    if let Some(s)=left { right=((s+1)..line.len()).find(|&i| line[i]==close); }
-                } else {
-                    let mut depth=0usize;
-                    for i in (0..=p.col.min(line.len().saturating_sub(1))).rev() {
-                        if line[i]==close { depth+=1; }
-                        if line[i]==open {
-                            if depth==0 { left=Some(i); break; } else { depth-=1; }
-                        }
-                    }
-                    if let Some(s)=left {
-                        depth=0;
-                        for i in s+1..line.len() {
-                            if line[i]==open { depth+=1; }
-                            if line[i]==close {
-                                if depth==0 { right=Some(i); break; } else { depth-=1; }
-                            }
-                        }
-                    }
+                let mut positions = Vec::new();
+                let mut q = Pos::new(0, 0);
+                loop {
+                    if let Some(ch) = b.char_at(q) { positions.push((q, ch)); }
+                    let Some(next) = b.next_pos(q) else { break; };
+                    q = next;
                 }
-                let s=left?;
-                let e=right?;
-                Some((Pos::new(p.line, if around {s} else {s+1}), Pos::new(p.line, if around {e+1} else {e})))
+                let at = positions.iter().position(|(pos, _)| *pos >= p).unwrap_or(positions.len().saturating_sub(1));
+                if open == close {
+                    let left = (0..=at).rev().find(|&i| positions[i].1 == open)?;
+                    let right = ((left + 1)..positions.len()).find(|&i| positions[i].1 == close)?;
+                    Some((if around { positions[left].0 } else { b.next_pos(positions[left].0)? },
+                          if around { b.next_pos(positions[right].0).unwrap_or(b.end()) } else { positions[right].0 }))
+                } else {
+                    let mut left = None;
+                    let mut depth = 0usize;
+                    for i in (0..=at).rev() {
+                        let ch = positions[i].1;
+                        if ch == close { depth += 1; }
+                        if ch == open {
+                            if depth == 0 { left = Some(i); break; }
+                            depth -= 1;
+                        }
+                    }
+                    let li = left?;
+                    depth = 0;
+                    let mut right = None;
+                    for i in li + 1..positions.len() {
+                        let ch = positions[i].1;
+                        if ch == open { depth += 1; }
+                        if ch == close {
+                            if depth == 0 { right = Some(i); break; }
+                            depth -= 1;
+                        }
+                    }
+                    let ri = right?;
+                    Some((if around { positions[li].0 } else { b.next_pos(positions[li].0)? },
+                          if around { b.next_pos(positions[ri].0).unwrap_or(b.end()) } else { positions[ri].0 }))
+                }
             }
             _ => None,
         }?;
@@ -1464,7 +1742,10 @@ impl Editor {
             if start <= end {(start,end)} else {(end,start)}
         };
         let text = b.text_in(a,z);
-        if let Some(reg) = self.vim_register.take() { self.vim_registers.insert(reg, text.clone()); }
+        if let Some(reg) = self.vim_register.take() {
+            if matches!(reg, '+' | '*') { crate::clipboard::set_clipboard(&text); }
+            self.vim_registers.insert(reg, text.clone());
+        }
         if op == 'y' {
             self.vim_registers.insert('0', text.clone());
             let pk=self.prev_kill; self.prev_kill=false;
@@ -1472,12 +1753,21 @@ impl Editor {
             self.buf_mut().cursor=start;
             self.say("Yanked");
         } else {
-            self.buf_mut().group += 1;
+            for n in (2..=9).rev() {
+                if let Some(prev) = self.vim_registers.get(&(char::from_digit(n - 1, 10).unwrap())).cloned() {
+                    self.vim_registers.insert(char::from_digit(n, 10).unwrap(), prev);
+                }
+            }
+            self.vim_registers.insert('1', text.clone());
+            if op == 'c' { self.buf_mut().begin_undo_group(); }
+            else { self.buf_mut().group += 1; }
             self.buf_mut().delete(a,z);
             self.buf_mut().cursor=a;
             self.buf_mut().mark_active=false;
             self.kill(&text,false);
-            if op=='c' { self.vim_mode=VimMode::Insert; }
+            if op=='c' {
+                self.vim_begin_insert_recording(None);
+            }
         }
     }
 
@@ -1615,7 +1905,16 @@ impl Editor {
             };
 
             let text = b.text_in(start, end);
-
+            if let Some(reg) = self.vim_register.take() {
+                self.vim_registers.insert(reg, text.clone());
+                if matches!(reg, '+' | '*') { crate::clipboard::set_clipboard(&text); }
+            }
+            for n in (2..=9).rev() {
+                if let Some(prev) = self.vim_registers.get(&(char::from_digit(n - 1, 10).unwrap())).cloned() {
+                    self.vim_registers.insert(char::from_digit(n, 10).unwrap(), prev);
+                }
+            }
+            self.vim_registers.insert('1', text.clone());
             self.buf_mut().delete(start, end);
             self.buf_mut().cursor = start;
             self.buf_mut().mark_active = false;
@@ -1632,7 +1931,16 @@ impl Editor {
             }
 
             let text = b.text_in(start, end);
-
+            if let Some(reg) = self.vim_register.take() {
+                self.vim_registers.insert(reg, text.clone());
+                if matches!(reg, '+' | '*') { crate::clipboard::set_clipboard(&text); }
+            }
+            for n in (2..=9).rev() {
+                if let Some(prev) = self.vim_registers.get(&(char::from_digit(n - 1, 10).unwrap())).cloned() {
+                    self.vim_registers.insert(char::from_digit(n, 10).unwrap(), prev);
+                }
+            }
+            self.vim_registers.insert('1', text.clone());
             self.buf_mut().delete(start, end);
             self.buf_mut().cursor = start;
             self.buf_mut().mark_active = false;
@@ -1674,6 +1982,12 @@ impl Editor {
 
         let text = b.text_in(start, end);
 
+        self.vim_registers.insert('0', text.clone());
+        if let Some(reg) = self.vim_register.take() {
+            self.vim_registers.insert(reg, text.clone());
+            if matches!(reg, '+' | '*') { crate::clipboard::set_clipboard(&text); }
+        }
+        crate::clipboard::set_clipboard(&text);
         self.kill(&text, false);
         self.buf_mut().mark_active = false;
         self.say("Yanked selection");

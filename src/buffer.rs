@@ -80,6 +80,7 @@ pub struct Buffer {
     pub git_marks_version: u64,
     pub git_tracked: bool,
     pub group: u64,
+    grouping: bool,
     undo: Vec<Edit>,
     redo: Vec<Edit>,
     saved_len: Option<usize>,
@@ -138,6 +139,7 @@ impl Buffer {
             git_marks_version: u64::MAX,
             git_tracked: false,
             group: 0,
+            grouping: false,
             undo: Vec::new(),
             redo: Vec::new(),
             saved_len: Some(0),
@@ -472,9 +474,9 @@ impl Buffer {
     /// The single primitive all edits go through. Returns the end of the
     /// inserted text.
     ///
-    /// Every successful primitive edit receives its own undo group. This makes
-    /// `u` restore the most recent individual change: for example, typing a
-    /// character and then deleting it can be undone one step at a time.
+    /// Every successful primitive edit receives its own undo group unless an
+    /// explicit transaction is active. Insert sessions and rectangular edits
+    /// use transactions so a logical user action is undone atomically.
     pub fn replace(&mut self, start: Pos, end: Pos, text: &str) -> Pos {
         let (start, end) = if start <= end {
             (start, end)
@@ -502,7 +504,9 @@ impl Buffer {
             self.saved_len = None;
         }
 
-        self.group += 1;
+        if !self.grouping {
+            self.group += 1;
+        }
 
         self.undo.push(Edit {
             start,
@@ -515,6 +519,22 @@ impl Buffer {
         self.redo.clear();
 
         end_pos
+    }
+
+    /// Group a sequence of primitive edits into one undo step.
+    pub fn begin_undo_group(&mut self) {
+        if !self.grouping {
+            self.group += 1;
+            self.grouping = true;
+        }
+    }
+
+    pub fn end_undo_group(&mut self) {
+        self.grouping = false;
+    }
+
+    pub fn is_undo_grouping(&self) -> bool {
+        self.grouping
     }
 
     pub fn insert(&mut self, at: Pos, text: &str) -> Pos {

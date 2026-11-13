@@ -23,7 +23,7 @@ Emacs-style functionality for operations outside Vim's navigation and modal edit
 
 - Kill ring: `C-k`, `C-w`, `M-w`, `C-y`, `M-y`, `M-d`, `M-DEL`.
 - Mark and region: `C-SPC`, `C-x C-x`, `C-x h`.
-- Undo/redo: `C-/`, `C-_`, `C-x u`, `M-_`.
+- Undo/redo: `C-/`, `C-_`, `C-x u`, `M-_`; Vim Insert sessions and multi-step conflict/block edits are grouped as one undo action.
 - Incremental search: `C-s`, `C-r` (smart-case).
 - Query-replace: `M-%` (`y` / `n` / `!` / `.` / `q`).
 - Numeric arguments: `C-u`, `M-3`.
@@ -41,6 +41,15 @@ Emacs-style functionality for operations outside Vim's navigation and modal edit
 - `f{char}`, `F{char}`, `t{char}`, `T{char}` find/till a character on the current line; `;` and `,` repeat in the same or reverse direction.
 - `m{a-z}` sets a local mark; `'{a-z}` jumps to its line and `` `{a-z} `` jumps to its exact position.
 - `%` jumps between matching `()`, `[]`, and `{}` delimiters.
+- `C-v` enters Visual Block mode; rectangular selections can be yanked, deleted or changed.
+- `SPC r f` opens recent files; `SPC r s` opens persistent search history; `SPC b m` bookmarks the current file and `SPC b b` opens bookmarks.
+- `M-x` prioritizes persistent command history before the full command list.
+- `C-n` in Normal mode selects all whole-word occurrences under point and enters multi-cursor Insert mode; typed characters are inserted at each occurrence.
+- A lightweight session file restores open file paths and cursor positions when OW starts without file arguments.
+- `.` repeats the last Insert-mode change, including `o` / `O` line creation.
+- `ip` / `ap` select inner / around paragraphs; nested delimiter text objects can span lines.
+- `]c` / `[c` navigate merge-conflict start markers; `SPC g C` / `SPC g T` keep ours / theirs for the conflict at point.
+- Registers `+` and `*` integrate with the system clipboard; delete registers `1`–`9` are rotated in memory.
 - `n` / `N` repeat the last search forward / backward; `*` / `#` search the word under the cursor.
 - `R` enters overwrite mode; `ESC` returns to Normal mode.
 - `"{register}` selects a named register for the next operator or paste. Registers are held in memory for the current editor session.
@@ -53,6 +62,7 @@ Emacs-style functionality for operations outside Vim's navigation and modal edit
 - `INSERT`
 - `VISUAL`
 - `VISUAL LINE`
+- `VISUAL BLOCK`
 
 The current mode is displayed in the status line. Vim motions and operators are handled by the modal layer; existing Emacs `C-x` command sequences are preserved. `C-e` is not assigned to a Vim command.
 
@@ -68,15 +78,17 @@ The current mode is displayed in the status line. Vim motions and operators are 
 | `i` / `I` | Insert at cursor / first nonblank |
 | `a` / `A` | Append after cursor / end of line |
 | `o` / `O` | Open line below / above |
-| `v` / `V` | Visual / Visual Line mode |
+| `v` / `V` / `C-v` | Visual / Visual Line / Visual Block mode |
 | `{count}{motion}` | Repeat a motion (`3j`, `2w`, `5G`) |
 | `d/c/y{motion}` | Delete / change / yank (`dd`, `3dw`, `d$`, `dgg`) |
 | `d/c/y i{object}` | Inner text object (`ciw`, `diw`, `yi"`) |
 | `d/c/y a{object}` | Around text object (`daw`, `da"`, `ca(`) |
-| Text objects | `w`, quotes, `()`, `[]`, `{}`, `<>` (same-line pairs) |
+| Text objects | `w`, `p`, quotes, `()`, `[]`, `{}`, `<>`; nested delimiters may span lines |
 | `x` / `D` / `Y` | Delete character / to line end / yank line |
 | `p` / `P` | Paste after / before cursor |
 | `r{char}` / `~` | Replace character / toggle case |
+| `.` | Repeat the last Insert-mode change (`i/a/o/O/R` and typed edits) |
+| `C-n` | Multi-cursor edit all occurrences of the word under point |
 | `u` / `C-r` | Undo / redo |
 
 ### Insert mode
@@ -97,6 +109,10 @@ The current mode is displayed in the status line. Vim motions and operators are 
 - `d`: delete selection.
 - `y`: yank selection.
 - `c`: change selection.
+- `C-v`: rectangular block selection; `d` deletes, `y` yanks, `c` changes the block.
+- `ESC`: return to Normal mode.
+
+Normal-mode macro recording (`q{register}` / `@{register}`) is intentionally not implemented; `q` is not assigned to macros.
 
 ## Space Leader
 
@@ -105,6 +121,10 @@ The current mode is displayed in the status line. Vim motions and operators are 
 | Key | Action |
 |---|---|
 | `SPC f` | Find file in project |
+| `SPC r f` | Recent files |
+| `SPC r s` | Search history |
+| `SPC b m` | Bookmark current file |
+| `SPC b b` | Open file bookmarks |
 | `SPC p g` | Search text in project |
 | `SPC e` | Open directory explorer |
 | `SPC TAB` | Next buffer |
@@ -154,6 +174,12 @@ All Git operations use **libgit2**, without requiring the `git` executable.
 | `SPC g p` | Previous changed hunk |
 | `SPC g F` | Pull (fast-forward only) |
 | `SPC g P` | Push |
+| `SPC g z` | Save stash (including untracked files) |
+| `SPC g S` | List stashes |
+| `SPC g Z` | Apply latest stash |
+| `SPC g X` | Drop latest stash |
+| `SPC g C` / `SPC g T` | Resolve current conflict: keep ours / theirs |
+| `]c` / `[c` | Next / previous merge-conflict start marker |
 
 ## Dired — Explorador de arquivos
 
@@ -261,9 +287,13 @@ Highlighting is incremental and restarts near the viewport in huge files.
 - `OW_THEME=dark|light|<syntect theme name>` selects a built-in theme.
 - Add language support through `src/langs.rs`.
 
-## Not implemented (vs. upstream mg)
+## Known limitations
 
-Keyboard macros, rectangles, advanced Dired operations, `.mg` startup files/extensions, registers and tags/cscope.
+- Vim macro recording/playback (`q{register}` / `@{register}`) is intentionally not implemented; `q` is not bound to macros.
+- `.` currently repeats Insert-mode changes (`i`, `a`, `o`, `O`, `R`) and typed edits; it does not yet replay every delete/change operator sequence.
+- Multi-cursor editing currently selects whole-word occurrences with `C-n` and synchronizes typed characters; it is not a full arbitrary-cursor engine.
+- Per-hunk Git stage/reset, a full undo tree, crash-recovery snapshots, and advanced Dired operations are not implemented.
+- `.mg` startup files/extensions and tags/cscope are not implemented.
 
 Push/pull use ssh-agent or the Git credential helper. These operations have not been tested against a real remote.
 

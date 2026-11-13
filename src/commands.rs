@@ -694,7 +694,14 @@ impl Editor {
     }
 
     fn extended_command(&mut self) {
-        let names: Vec<String> = COMMANDS.iter().map(|c| c.0.to_string()).collect();
+        if self.command_history.is_empty() {
+            self.command_history = std::fs::read_to_string(crate::editor::ow_config_dir().join("command-history"))
+                .map(|s| s.lines().map(|line| line.to_string()).collect()).unwrap_or_default();
+        }
+        let mut names = self.command_history.clone();
+        for (name, _) in COMMANDS {
+            if !names.iter().any(|item| item.as_str() == *name) { names.push((*name).to_string()); }
+        }
         self.start_prompt(Prompt::new("M-x ", PKind::Command, Some(names)));
     }
 
@@ -729,11 +736,11 @@ impl Editor {
         t.push_str("  i / I               insert at cursor / first nonblank\n");
         t.push_str("  a / A               append after cursor / end of line\n");
         t.push_str("  o / O               open line below / above\n");
-        t.push_str("  v / V               visual / visual-line mode\n");
+        t.push_str("  v / V / C-v         visual / visual-line / visual-block mode\n");
         t.push_str("  d/c/y{motion}       delete / change / yank (dd, 3dw, d$, dgg)\n");
         t.push_str("  d/c/y i{object}     inner object (ciw, diw, yi\")\n");
         t.push_str("  d/c/y a{object}     around object (daw, da\", ca(), ya[)\n");
-        t.push_str("  Objects: w, \", ', `, (), [], {}, <> (same-line pairs)\n");
+        t.push_str("  Objects: w, \", ', `, (), [], {}, <> (nested pairs may span lines)\n");
         t.push_str("  x / D / Y           delete char / to line end / yank line\n");
         t.push_str("  p / P               paste after / before cursor\n");
         t.push_str("  r{char} / R / ~     replace char / replace mode / toggle case\n");
@@ -743,9 +750,12 @@ impl Editor {
         t.push_str("  / ? n N             search forward/backward; repeat / reverse repeat\n");
         t.push_str("  * / #               search word under cursor forward / backward\n");
         t.push_str("  \"{register}        select named register for next yank/delete/paste\n");
+        t.push_str("  .                   repeat last Insert-mode change (i/a/o/O/R)\n");
+        t.push_str("  C-n                 edit all whole-word occurrences under cursor (multi-cursor)\n");
         t.push_str("  u / C-r             undo / redo\n");
         t.push_str("  C-a                 select whole buffer (VisualLine)\n");
         t.push_str("  C-e                 reserved for Emacs bindings\n");
+        t.push_str("  q / @               no Vim macro recording/playback (intentionally unbound)\n");
         t.push_str("  Shift-Left/Right    previous / next buffer\n");
         t.push_str("  H / L               first nonblank / end of line\n\n");
 
@@ -762,10 +772,13 @@ impl Editor {
         t.push_str("  c                   change selection and enter Insert\n");
         t.push_str("  y                   yank selection\n");
         t.push_str("  J / K               move selected lines down / up\n");
+        t.push_str("  C-v                 enter Visual Block; d/x delete rectangle, y yank rectangle, c change\n");
         t.push_str("  v / V / ESC         exit or switch visual mode\n\n");
 
         t.push_str("LEADER — SPC\n");
         t.push_str("  SPC f               find file in project\n");
+        t.push_str("  SPC r f / SPC r s   recent files / search history\n");
+        t.push_str("  SPC b m / SPC b b   bookmark current file / open bookmark\n");
         t.push_str("  SPC p g             grep in project\n");
         t.push_str("  SPC e               file explorer (Dired)\n");
         t.push_str("  SPC t               terminal (reserved)\n");
@@ -790,7 +803,11 @@ impl Editor {
         t.push_str("  SPC g o             checkout branch (use -b name to create)\n");
         t.push_str("  SPC g r             restore file from HEAD (confirmation)\n");
         t.push_str("  SPC g n / SPC g p   next / previous hunk\n");
-        t.push_str("  SPC g F / SPC g P   pull (fast-forward) / push\n\n");
+        t.push_str("  SPC g F / SPC g P   pull (fast-forward) / push\n");
+        t.push_str("  SPC g z / SPC g S   create stash / list stashes\n");
+        t.push_str("  SPC g Z / SPC g X   apply latest stash / drop latest stash\n");
+        t.push_str("  ]c / [c             next / previous merge-conflict marker\n");
+        t.push_str("  SPC g C / SPC g T   resolve current conflict: keep ours / theirs\n\n");
 
         t.push_str("EMACS-STYLE COMMANDS (non-navigation)\n");
         t.push_str("  These Ctrl/Alt bindings remain available outside Vim motions.\n\n");
