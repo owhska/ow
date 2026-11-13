@@ -103,25 +103,25 @@ fn main() -> io::Result<()> {
     let has_files = args.iter().any(|a| !a.starts_with('+'));
     if !has_files { ed.restore_session(); }
     let mut line: Option<usize> = None;
-    let mut first = true;
+    let mut first_idx: Option<usize> = None;
     for a in &args {
         if let Some(n) = a.strip_prefix('+').and_then(|n| n.parse::<usize>().ok()) {
             line = Some(n);
             continue;
         }
         ed.find_file(a);
-        if first {
-            first = false;
+        // find_file (arquivo ou diretório/dired) deixa o buffer aberto como atual
+        if first_idx.is_none() {
+            first_idx = Some(ed.cur);
         }
         if let Some(n) = line.take() {
             ed.goto_line_in_cur(n, 0);
         }
     }
-    // show the first file given
-    if args.iter().any(|a| !a.starts_with('+')) {
+    // show the first file or directory given
+    if let Some(idx) = first_idx {
         let msg = ed.msg.clone();
-        let first_idx = ed.bufs.iter().position(|b| b.kind == buffer::BufKind::File).unwrap_or(0);
-        ed.switch_to(first_idx);
+        ed.switch_to(idx);
         ed.msg = msg;
     }
     ed.refresh_git_info();
