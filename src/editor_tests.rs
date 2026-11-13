@@ -540,3 +540,25 @@ fn vim_change_operator_and_insert_undo_together() {
     assert_eq!(e.buf().lines, vec!["hello world"]);
     std::fs::remove_dir_all(dir).ok();
 }
+
+#[test]
+fn vim_leader_f_matches_project_find_file() {
+    let dir = tmpdir("vimspcf");
+    std::fs::write(dir.join("alpha.txt"), "a\n").unwrap();
+    std::fs::write(dir.join("beta.rs"), "b\n").unwrap();
+
+    // SPC f in Vim normal mode opens the same prompt as C-x p f.
+    let mut e = Editor::new();
+    e.cwd = dir.clone();
+    e.open_path(&dir.join("alpha.txt")).unwrap();
+    e.vim_mode = VimMode::Normal;
+    keys(&mut e, "SPC f");
+    assert!(matches!(e.mode, Mode::Prompt(_)), "SPC f did not open the prompt");
+    keys(&mut e, "b e t a RET");
+    assert_eq!(e.buf().name, "beta.rs");
+
+    // Other leader chords whose last key collides with a Vim command (SPC b m vs `m`).
+    e.vim_mode = VimMode::Normal;
+    keys(&mut e, "SPC b m");
+    assert!(e.vim_pending.is_empty(), "pending: {:?}", e.vim_pending);
+}

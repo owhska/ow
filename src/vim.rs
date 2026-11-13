@@ -563,7 +563,10 @@ impl Editor {
             }
         }
 
-        match n {
+        // While a leader sequence (SPC ...) is pending, skip these single-key
+        // commands so keys like f/t/m/n reach the leader table below.
+        let leader_pending = self.vim_pending.starts_with("SPC");
+        match if leader_pending { "" } else { n } {
             "]" | "[" => { self.vim_pending = n.to_string(); return true; }
             "m" => { self.vim_pending = "mark-set".into(); return true; }
             "'" => { self.vim_pending = "mark-line".into(); return true; }
