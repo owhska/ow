@@ -679,10 +679,6 @@ impl Buffer {
             let line = line % line_count;
             let start_column = if offset == 0 { from.col } else { 0 };
 
-            if offset == line_count && start_column == 0 {
-                break;
-            }
-
             if let Some(column) =
                 self.find_in_line(line, &query, case_sensitive, start_column, None)
             {

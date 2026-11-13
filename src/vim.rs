@@ -581,9 +581,15 @@ impl Editor {
             "n" | "N" => {
                 if !self.last_search.is_empty() {
                     let forward = if n == "n" { self.last_search_forward } else { !self.last_search_forward };
-                    let from = self.buf().cursor;
-                    let found = if forward { self.buf().find_forward(from, &self.last_search, true) } else { self.buf().find_backward(from, &self.last_search, true) };
-                    if let Some((a,e)) = found { self.buf_mut().cursor = if forward {a} else {e}; }
+                    let cur = self.buf().cursor;
+                    let found = if forward {
+                        // começa uma coluna depois, para não achar o match onde já está
+                        let from = Pos::new(cur.line, cur.col + 1);
+                        self.buf().find_forward(from, &self.last_search, true)
+                    } else {
+                        self.buf().find_backward(cur, &self.last_search, true)
+                    };
+                    if let Some((a, _)) = found { self.buf_mut().cursor = a; }
                 }
                 return true;
             }
@@ -595,9 +601,14 @@ impl Editor {
                 if let Some(word) = self.word_under_cursor() {
                     self.last_search = word.clone();
                     self.last_search_forward = n == "*";
-                    let from = self.buf().cursor;
-                    let found = if n == "*" { self.buf().find_forward(from, &word, true) } else { self.buf().find_backward(from, &word, true) };
-                    if let Some((a,e)) = found { self.buf_mut().cursor = if n == "*" {a} else {e}; }
+                    let cur = self.buf().cursor;
+                    let found = if n == "*" {
+                        let from = Pos::new(cur.line, cur.col + 1);
+                        self.buf().find_forward(from, &word, true)
+                    } else {
+                        self.buf().find_backward(cur, &word, true)
+                    };
+                    if let Some((a, _)) = found { self.buf_mut().cursor = a; }
                 }
                 return true;
             }
