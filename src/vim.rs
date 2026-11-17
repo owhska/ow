@@ -4,6 +4,12 @@ impl Editor {
     pub fn handle_vim_key(&mut self, key: Key) -> bool {
         if self.buf().kind == BufKind::Dired {
             let n = key.name.as_str();
+            if n == "SPC" || self.vim_pending.starts_with("SPC") {
+                return self.handle_vim_normal(key);
+            }
+            if n.starts_with("M-") || n.starts_with("C-M-") {
+                return false;
+            }
             let meta = self.buf().meta.get(self.buf().cursor.line).cloned();
             let is_entry = self.buf().cursor.line > 1;
             let cur_dir = self.dired_current_dir().unwrap_or_else(|| self.cwd.clone());
@@ -127,8 +133,8 @@ impl Editor {
                     return true;
                 }
 
-                // --- Let SPC leader and C-g through ---
-                "SPC" | "C-g" => return false,
+                // --- Let C-g through ---
+                "C-g" => return false,
 
                 // --- Block everything else ---
                 _ => return true,
@@ -446,6 +452,21 @@ impl Editor {
                 self.copy_to_system_clipboard();
                 return true;
             }
+            ">" => {
+                self.vim_shift_visual_indent(true);
+                return true;
+            }
+            "<" => {
+                self.vim_shift_visual_indent(false);
+                return true;
+            }
+            "=" => {
+                let Some(mark) = self.buf().mark else { return true; };
+                let cursor = self.buf().cursor;
+                self.vim_indent_lines(mark.line.min(cursor.line), mark.line.max(cursor.line));
+                self.vim_mode = VimMode::Normal;
+                return true;
+            }
 
             // Movements.
             "h" | "<left>" => {
@@ -508,6 +529,57 @@ impl Editor {
         }
 
         false
+    }
+
+    fn vim_shift_visual_indent(&mut self, right: bool) {
+        let Some(mark) = self.buf().mark else { return; };
+        if self.buf().read_only {
+            self.say("Buffer is read-only");
+            return;
+        }
+
+        let cursor = self.buf().cursor;
+        let first = mark.line.min(cursor.line);
+        let last = mark.line.max(cursor.line);
+        let unit = self.indent_unit_str();
+        let old_cursor_indent = self.buf().indent_of(cursor.line).chars().count();
+        let old_mark_indent = self.buf().indent_of(mark.line).chars().count();
+        self.buf_mut().group += 1;
+
+        for line in first..=last {
+            let text = self.buf().lines[line].clone();
+            if right {
+                if !text.is_empty() {
+                    self.buf_mut().insert(Pos::new(line, 0), &unit);
+                }
+            } else {
+                let indent = self.buf().indent_of(line);
+                let remove = if indent.starts_with('\t') {
+                    1
+                } else {
+                    indent.chars().take(self.buf().indent_unit.max(1)).count()
+                };
+                if remove > 0 {
+                    self.buf_mut().delete(Pos::new(line, 0), Pos::new(line, remove));
+                }
+            }
+        }
+
+        let new_cursor_indent = self.buf().indent_of(cursor.line).chars().count();
+        let new_mark_indent = self.buf().indent_of(mark.line).chars().count();
+        let adjust = |pos: Pos, old: usize, new: usize| {
+            let col = if pos.col <= old {
+                new
+            } else {
+                new + pos.col - old
+            };
+            Pos::new(pos.line, col)
+        };
+        let b = self.buf_mut();
+        b.cursor = b.clamp(adjust(cursor, old_cursor_indent, new_cursor_indent));
+        b.mark = Some(b.clamp(adjust(mark, old_mark_indent, new_mark_indent)));
+        b.mark_active = true;
+        self.say(if right { "Indented selection" } else { "Unindented selection" });
     }
 
     // -------------------------------------------------------- Normal Mode
@@ -908,6 +980,11 @@ impl Editor {
                     self.kill_buffer_cmd();
                     return true;
                 }
+                "SPC l w" => {
+                    self.vim_pending.clear();
+                    self.toggle_line_wrap();
+                    return true;
+                }
 
                 // <leader>s: vimgrep / isearch
                 "SPC s" => {
@@ -990,7 +1067,7 @@ impl Editor {
                 }
 
                 // Prefixes that wait for the next key.
-                "SPC w" | "SPC r" | "SPC g" | "SPC p" | "SPC b" => {
+                "SPC w" | "SPC r" | "SPC g" | "SPC p" | "SPC b" | "SPC l" => {
                     self.vim_pending = chord;
                     self.say(format!("{} -", self.vim_pending));
                     return true;
@@ -1186,6 +1263,14 @@ impl Editor {
                 self.vim_count=0;
                 return true;
             }
+            "RET" => {
+                self.next_line();
+                return true;
+            }
+            "DEL" => {
+                self.backward_char();
+                return true;
+            }
 
             // Edits.
             "x" => {
@@ -1293,6 +1378,13 @@ impl Editor {
                 self.vim_operator_count=count;
                 self.vim_count=0;
                 self.say("y-");
+                return true;
+            }
+            "=" => {
+                self.vim_op = Some('=');
+                self.vim_operator_count=count;
+                self.vim_count=0;
+                self.say("=-");
                 return true;
             }
 
@@ -1747,6 +1839,11 @@ impl Editor {
     }
 
     fn vim_apply_operator(&mut self, op: char, start: Pos, end: Pos, linewise: bool) {
+        if op == '=' {
+            self.vim_indent_lines(start.line.min(end.line), start.line.max(end.line));
+            return;
+        }
+
         let b = self.buf();
         let (a, z) = if linewise {
             let lo = start.line.min(end.line);
@@ -1783,6 +1880,107 @@ impl Editor {
                 self.vim_begin_insert_recording(None);
             }
         }
+    }
+
+    fn vim_indent_lines(&mut self, first: usize, last: usize) {
+        let last = last.min(self.buf().lines.len().saturating_sub(1));
+        let first = first.min(last);
+        let indent_unit = if self.buf().use_tabs {
+            self.buf().tab_width.max(1)
+        } else {
+            self.buf().indent_unit.max(1)
+        };
+        let python = self.buf().hl.name == "Python";
+        let tab_width = self.buf().tab_width.max(1);
+        let use_tabs = self.buf().use_tabs;
+        self.buf_mut().group += 1;
+
+        for line in first..=last {
+            let text = self.buf().lines[line].clone();
+            let content = text.trim_start_matches([' ', '\t']);
+            let indent = if let Some(close) = content.chars().next().filter(|c| matches!(c, '}' | ')' | ']')) {
+                let open = match close {
+                    '}' => '{',
+                    ')' => '(',
+                    ']' => '[',
+                    _ => unreachable!(),
+                };
+                let mut depth = 0;
+                let mut matching_indent = None;
+                for prior in (0..line).rev() {
+                    for ch in self.buf().lines[prior].chars().rev() {
+                        if ch == close {
+                            depth += 1;
+                        } else if ch == open {
+                            if depth == 0 {
+                                matching_indent = Some(self.vim_line_indent_columns(prior, tab_width));
+                                break;
+                            }
+                            depth -= 1;
+                        }
+                    }
+                    if matching_indent.is_some() {
+                        break;
+                    }
+                }
+                matching_indent.unwrap_or_else(|| self.vim_previous_indent(line, indent_unit, python, tab_width))
+            } else {
+                self.vim_previous_indent(line, indent_unit, python, tab_width)
+            };
+            let indentation = if use_tabs {
+                "\t".repeat(indent / tab_width) + &" ".repeat(indent % tab_width)
+            } else {
+                " ".repeat(indent)
+            };
+            let old_indent = text.chars().take_while(|c| matches!(c, ' ' | '\t')).count();
+            if old_indent != indentation.chars().count() || text.chars().take(old_indent).collect::<String>() != indentation {
+                let buffer = self.buf_mut();
+                buffer.delete(Pos::new(line, 0), Pos::new(line, old_indent));
+                buffer.insert(Pos::new(line, 0), &indentation);
+            }
+        }
+
+        let col = self.buf().indent_of(first).chars().count();
+        self.buf_mut().cursor = Pos::new(first, col);
+        self.buf_mut().mark_active = false;
+        self.say("Lines indented");
+    }
+
+    fn toggle_line_wrap(&mut self) {
+        self.wrap = !self.wrap;
+        for buffer in &mut self.bufs {
+            buffer.left = 0;
+        }
+        for window in &mut self.windows {
+            window.left = 0;
+        }
+        self.fix_scroll();
+        self.say(if self.wrap { "Line wrap on" } else { "Line wrap off" });
+    }
+
+    fn vim_previous_indent(&self, line: usize, indent_unit: usize, python: bool, tab_width: usize) -> usize {
+        let Some(previous) = (0..line).rev().find(|&i| !self.buf().lines[i].trim().is_empty()) else {
+            return 0;
+        };
+        let text = self.buf().lines[previous].trim_end();
+        let indent = self.vim_line_indent_columns(previous, tab_width);
+        if text.ends_with(['{', '(', '[']) || (python && text.ends_with(':')) {
+            indent + indent_unit
+        } else {
+            indent
+        }
+    }
+
+    fn vim_line_indent_columns(&self, line: usize, tab_width: usize) -> usize {
+        let mut columns = 0;
+        for ch in self.buf().lines[line].chars() {
+            match ch {
+                ' ' => columns += 1,
+                '\t' => columns += tab_width - columns % tab_width,
+                _ => break,
+            }
+        }
+        columns
     }
 
     fn vim_forward_end_word(&mut self) {

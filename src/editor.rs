@@ -397,6 +397,7 @@ pub struct Editor {
     pub keymap: HashMap<String, &'static str>,
     pub prefixes: HashSet<String>,
     pub line_numbers: bool,
+    pub wrap: bool,
     pub auto_indent: bool,
     pub cwd: PathBuf,
     pub proj_root: Option<PathBuf>,
@@ -484,6 +485,7 @@ impl Editor {
             keymap,
             prefixes,
             line_numbers: false,
+            wrap: false,
             auto_indent: true,
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             proj_root: None,
@@ -1138,6 +1140,54 @@ impl Editor {
         let avail = self.text_w.saturating_sub(g1 + g2).max(1);
         let b = &mut self.bufs[self.cur];
         let l = b.cursor.line;
+        if self.wrap {
+            if l < b.top {
+                b.top = l;
+                b.left = 0;
+            }
+
+            let top_segment = wrap_segments(&b.lines[b.top], b.tab_width, avail)
+                .iter()
+                .position(|(start, _)| *start == b.left)
+                .unwrap_or(0);
+            let mut cursor_row = if l == b.top {
+                0
+            } else {
+                wrap_segments(&b.lines[b.top], b.tab_width, avail)
+                    .len()
+                    .saturating_sub(top_segment)
+            };
+            for line in b.top + 1..l {
+                cursor_row += wrap_segments(&b.lines[line], b.tab_width, avail).len();
+            }
+            let cursor_segments = wrap_segments(&b.lines[l], b.tab_width, avail);
+            let display_column = display_col(&b.lines[l], b.cursor.col, b.tab_width);
+            let cursor_segment = cursor_segments
+                .iter()
+                .position(|(start, end)| display_column >= *start && display_column < *end)
+                .or_else(|| {
+                    cursor_segments
+                        .iter()
+                        .position(|(start, end)| display_column == *start && *start == *end)
+                })
+                .unwrap_or(cursor_segments.len().saturating_sub(1));
+            cursor_row += if l == b.top {
+                cursor_segment.saturating_sub(top_segment)
+            } else {
+                cursor_segment
+            };
+
+            if cursor_row >= h {
+                b.top = l;
+                b.left = 0;
+                if cursor_segment >= h {
+                    b.left = cursor_segments[cursor_segment + 1 - h].0;
+                }
+            }
+            b.top = b.top.min(b.lines.len() - 1);
+            return;
+        }
+
         if l < b.top {
             b.top = if b.top - l == 1 { l } else { l.saturating_sub(h / 2) };
         } else if l >= b.top + h {
@@ -1223,12 +1273,19 @@ impl Editor {
         let mode = std::mem::replace(&mut self.mode, Mode::Normal);
         match mode {
             Mode::Normal => {
-                if !self.pending.is_empty() {
+                if matches!(key.name.as_str(), "ESC" | "C-[") {
+                    if self.vim_mode == VimMode::Insert && self.buf().kind != BufKind::Dired {
+                        self.handle_vim_key(key);
+                    }
+                    self.cancel_key_sequences();
+                } else if !self.pending.is_empty() {
                     self.normal_key(key);
                 } else if self.special_key(&key.name) {
                     // Handled by special buffer (git status, log, diff, etc.)
                 } else if self.vim_mode == VimMode::Normal && self.handle_vim_page_key(&key.name) {
                     // Ctrl-B / Ctrl-D are Vim page motions, not Emacs cursor/edit commands.
+                } else if self.vim_mode == VimMode::Insert && is_emacs_motion_key(&key.name) {
+                    self.normal_key(key);
                 } else if !self.handle_vim_key(key.clone()) && !is_emacs_motion_key(&key.name) {
                     self.normal_key(key);
                 }
@@ -1238,6 +1295,25 @@ impl Editor {
             Mode::QReplace(q) => self.qr_key(q, key),
             Mode::YesNo(y) => self.yesno_key(y, key),
         }
+    }
+
+    fn cancel_key_sequences(&mut self) {
+        self.pending.clear();
+        self.vim_pending.clear();
+        self.vim_op = None;
+        self.vim_replace_next = false;
+        self.vim_replace_mode = false;
+        self.vim_multi_cursors.clear();
+        self.vim_count = 0;
+        self.vim_operator_count = 0;
+        self.meta_pending = false;
+        self.arg = None;
+        self.arg_typing = false;
+        self.arg_digits = false;
+        self.quote_next = false;
+        self.vim_mode = VimMode::Normal;
+        self.buf_mut().mark_active = false;
+        self.say("Quit");
     }
 
     /// Handle Vim's page motions before the Emacs command dispatcher.
@@ -1301,7 +1377,13 @@ impl Editor {
 
         let Some((target_win_id, rect)) = found else { return };
 
-        if target_win_id != self.active_win_id {
+        let activates_window = matches!(
+            ev.kind,
+            MouseEventKind::Down(MouseButton::Left)
+                | MouseEventKind::ScrollUp
+                | MouseEventKind::ScrollDown
+        );
+        if activates_window && target_win_id != self.active_win_id {
             self.set_active_window(target_win_id);
         }
 
@@ -1404,6 +1486,10 @@ impl Editor {
         let mut name = key.name.clone();
         let mut ch = key.ch;
         self.msg.clear();
+        if matches!(name.as_str(), "ESC" | "C-[") {
+            self.cancel_key_sequences();
+            return;
+        }
         if self.quote_next {
             self.quote_next = false;
             let c = match (name.as_str(), ch) {
@@ -1423,10 +1509,6 @@ impl Editor {
             self.meta_pending = false;
             name = keys::meta_of(&name);
             ch = None;
-        } else if name == "ESC" && self.pending.is_empty() {
-            self.meta_pending = true;
-            self.say("ESC-");
-            return;
         }
         if name == "C-g" {
             self.pending.clear();
@@ -1932,6 +2014,13 @@ impl Editor {
         self.qr_next(q);
     }
 
+    fn qr_finish(&mut self, q: QReplace) {
+        if q.count > 0 {
+            self.buf_mut().end_undo_group();
+        }
+        self.say(format!("Replaced {} occurrence{}", q.count, if q.count == 1 { "" } else { "s" }));
+    }
+
     fn qr_next(&mut self, mut q: QReplace) {
         let cur = self.buf().cursor;
         match self.buf().find_forward(cur, &q.from, false) {
@@ -1940,15 +2029,16 @@ impl Editor {
                 self.buf_mut().cursor = e;
                 self.mode = Mode::QReplace(q);
             }
-            None => {
-                self.say(format!("Replaced {} occurrence{}", q.count, if q.count == 1 { "" } else { "s" }));
-            }
+            None => self.qr_finish(q),
         }
     }
 
     fn qr_replace_cur(&mut self, q: &mut QReplace) {
         if let Some((a, e)) = q.cur.take() {
             let b = self.buf_mut();
+            if q.count == 0 {
+                b.begin_undo_group();
+            }
             let end = b.replace(a, e, &q.to);
             b.cursor = end;
             q.count += 1;
@@ -1964,7 +2054,7 @@ impl Editor {
             "n" | "DEL" => self.qr_next(q),
             "." => {
                 self.qr_replace_cur(&mut q);
-                self.say(format!("Replaced {} occurrence(s)", q.count));
+                self.qr_finish(q);
             }
             "!" => {
                 self.qr_replace_cur(&mut q);
@@ -1976,9 +2066,9 @@ impl Editor {
                     b.cursor = end;
                     q.count += 1;
                 }
-                self.say(format!("Replaced {} occurrence(s)", q.count));
+                self.qr_finish(q);
             }
-            "q" | "RET" | "ESC" | "C-g" => self.say(format!("Replaced {} occurrence(s)", q.count)),
+            "q" | "RET" | "ESC" | "C-g" => self.qr_finish(q),
             _ => self.mode = Mode::QReplace(q),
         }
     }
@@ -2179,6 +2269,35 @@ pub fn display_col(line: &str, col: usize, tab: usize) -> usize {
         d += if c == '\t' { tab - d % tab } else { c.width().unwrap_or(0) };
     }
     d
+}
+
+pub(crate) fn wrap_segments(line: &str, tab: usize, width: usize) -> Vec<(usize, usize)> {
+    let width = width.max(1);
+    let mut segments = Vec::new();
+    let (mut segment_start, mut display_column) = (0, 0);
+
+    for character in line.chars() {
+        let cell_width = if character == '\t' {
+            tab - display_column % tab
+        } else if character.is_control() {
+            1
+        } else {
+            UnicodeWidthChar::width(character).unwrap_or(0)
+        };
+        if display_column > segment_start && display_column + cell_width > segment_start + width {
+            segments.push((segment_start, display_column));
+            segment_start = display_column;
+        }
+        display_column += cell_width;
+    }
+
+    if display_column > segment_start || segments.is_empty() {
+        segments.push((segment_start, display_column));
+    }
+    if display_column > 0 && display_column == segment_start + width {
+        segments.push((display_column, display_column));
+    }
+    segments
 }
 
 pub fn col_from_display(line: &str, target_d: usize, tab: usize) -> usize {

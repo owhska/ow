@@ -426,7 +426,7 @@ fn vim_visual_mode_and_move_lines() {
 fn vim_counts_operators_and_text_objects() {
     let dir = tmpdir("vim-operators");
     let mut e = editor_in(&dir);
-    keys(&mut e, "one two three four");
+    keys(&mut e, "one SPC two SPC three SPC four");
     keys(&mut e, "ESC");
     keys(&mut e, "0 2dw");
     assert_eq!(e.buf().lines[0], "three four");
@@ -561,4 +561,193 @@ fn vim_leader_f_matches_project_find_file() {
     e.vim_mode = VimMode::Normal;
     keys(&mut e, "SPC b m");
     assert!(e.vim_pending.is_empty(), "pending: {:?}", e.vim_pending);
+}
+
+#[test]
+fn vim_normal_enter_and_backspace_are_motions() {
+    let dir = tmpdir("vim-normal-special-keys");
+    let mut e = editor_in(&dir);
+    e.buf_mut().set_text("first\nsecond\nthird");
+    e.vim_mode = VimMode::Normal;
+    e.buf_mut().cursor = Pos::new(0, 1);
+
+    keys(&mut e, "RET");
+    assert_eq!(e.buf().cursor, Pos::new(1, 1));
+    keys(&mut e, "DEL");
+    assert_eq!(e.buf().cursor, Pos::new(1, 0));
+    assert_eq!(e.buf().lines, vec!["first", "second", "third"]);
+
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn dired_allows_vim_leader_and_meta_commands() {
+    let dir = tmpdir("dired-leader-meta");
+    let mut e = Editor::new();
+    e.cwd = dir.clone();
+    e.open_dir(&dir);
+    e.vim_mode = VimMode::Normal;
+
+    keys(&mut e, "SPC e");
+    assert_eq!(e.buf().kind, BufKind::Dired);
+    assert!(e.vim_pending.is_empty());
+
+    keys(&mut e, "M-x");
+    assert!(matches!(e.mode, Mode::Prompt(_)));
+
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn escape_cancels_pending_key_sequences() {
+    let dir = tmpdir("escape-cancel-sequences");
+    let mut e = editor_in(&dir);
+    e.vim_mode = VimMode::Normal;
+
+    keys(&mut e, "SPC");
+    assert_eq!(e.vim_pending, "SPC");
+    keys(&mut e, "ESC");
+    assert!(e.vim_pending.is_empty());
+    assert!(!e.meta_pending);
+
+    keys(&mut e, "M-g");
+    assert_eq!(e.pending, vec!["M-g"]);
+    keys(&mut e, "ESC");
+    assert!(e.pending.is_empty());
+    assert!(!e.meta_pending);
+    assert_eq!(e.msg, "Quit");
+
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn vim_equal_operator_reindents_lines() {
+    let dir = tmpdir("vim-equal-indent");
+    let mut e = editor_in(&dir);
+    e.buf_mut().set_text("fn main() {\nwrong\n}\n");
+    e.vim_mode = VimMode::Normal;
+    e.buf_mut().cursor = Pos::new(1, 0);
+
+    keys(&mut e, "==");
+    assert_eq!(e.buf().lines, vec!["fn main() {", "    wrong", "}"]);
+
+    e.buf_mut().set_text("fn main() {\nwrong\n}\n");
+    e.buf_mut().cursor = Pos::new(1, 0);
+    keys(&mut e, "=j");
+    assert_eq!(e.buf().lines, vec!["fn main() {", "    wrong", "}"]);
+
+    e.buf_mut().set_text("fn main() {\nwrong\n}\n");
+    e.vim_mode = VimMode::VisualLine;
+    e.buf_mut().mark = Some(Pos::new(0, 0));
+    e.buf_mut().mark_active = true;
+    e.buf_mut().cursor = Pos::new(1, 0);
+    keys(&mut e, "=");
+    assert_eq!(e.buf().lines, vec!["fn main() {", "    wrong", "}"]);
+    assert_eq!(e.vim_mode, VimMode::Normal);
+
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn saving_does_not_reindent_the_buffer() {
+    let dir = tmpdir("save-no-reindent");
+    let path = dir.join("sample.rs");
+    std::fs::write(&path, "").unwrap();
+    let mut e = editor_in(&dir);
+    e.open_path(&path).unwrap();
+    e.buf_mut().set_text("fn main() {\nwrong\n}\n");
+
+    e.save_current(None);
+
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "fn main() {\nwrong\n}\n"
+    );
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn vim_visual_indent_keeps_the_selection() {
+    let dir = tmpdir("vim-visual-indent");
+    let mut e = editor_in(&dir);
+    e.buf_mut().set_text("alpha\nbeta\ngamma");
+    e.vim_mode = VimMode::Visual;
+    e.buf_mut().mark = Some(Pos::new(0, 0));
+    e.buf_mut().mark_active = true;
+    e.buf_mut().cursor = Pos::new(1, 1);
+
+    keys(&mut e, ">");
+    assert_eq!(e.buf().lines, vec!["    alpha", "    beta", "gamma"]);
+    assert_eq!(e.vim_mode, VimMode::Visual);
+    assert!(e.buf().mark_active);
+
+    keys(&mut e, "<");
+    assert_eq!(e.buf().lines, vec!["alpha", "beta", "gamma"]);
+    assert_eq!(e.vim_mode, VimMode::Visual);
+    assert!(e.buf().mark_active);
+
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn leader_lw_toggles_line_wrap() {
+    let dir = tmpdir("leader-line-wrap");
+    let mut e = editor_in(&dir);
+    e.vim_mode = VimMode::Normal;
+
+    keys(&mut e, "SPC l w");
+    assert!(e.wrap);
+    keys(&mut e, "SPC l w");
+    assert!(!e.wrap);
+
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn wrap_segments_split_display_columns() {
+    assert_eq!(crate::editor::wrap_segments("abcdefgh", 8, 4), vec![(0, 4), (4, 8), (8, 8)]);
+    assert_eq!(crate::editor::wrap_segments("ab\tc", 4, 4), vec![(0, 4), (4, 5)]);
+}
+
+#[test]
+fn wrapped_scroll_keeps_cursor_visible() {
+    let dir = tmpdir("wrapped-scroll");
+    let mut e = editor_in(&dir);
+    e.buf_mut().set_text("abcdefghijklmnopqrst");
+    e.buf_mut().cursor = Pos::new(0, 19);
+    e.wrap = true;
+    e.text_w = 6;
+    e.text_h = 2;
+
+    e.fix_scroll();
+
+    assert_eq!(e.buf().left, 12);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn mouse_hover_does_not_change_window_focus() {
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+
+    let mut e = Editor::new();
+    e.screen_w = 80;
+    e.screen_h = 24;
+    e.split_window_right();
+    let other_id = e.windows.iter().find(|w| w.id != e.active_win_id).unwrap().id;
+
+    e.on_mouse(MouseEvent {
+        kind: MouseEventKind::Moved,
+        column: 60,
+        row: 3,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert_ne!(e.active_win_id, other_id);
+
+    e.on_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 60,
+        row: 3,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert_eq!(e.active_win_id, other_id);
 }

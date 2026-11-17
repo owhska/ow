@@ -226,44 +226,13 @@ fn render_window(
     let line_count = buffer.lines.len();
     let (tab_width, kind) = (buffer.tab_width, buffer.kind);
 
-    for row in 0..text_height {
-        let line_index = top + row;
-        let y = rect.y + row as u16;
-
-        if line_index >= line_count {
+    let mut visual_row = 0;
+    for line_index in top..line_count {
+        if visual_row >= text_height {
             break;
         }
 
-        if git_gutter_width == 1 {
-            let mark = buffer.git_marks.get(line_index).copied().unwrap_or(0);
-
-            let (character, style) = match mark {
-                MARK_ADDED => ("▎", fg(c(INFO))),
-                MARK_MODIFIED => ("▎", fg(c(WARN))),
-                MARK_DELETED => ("▁", fg(c(ERROR))),
-                _ => (" ", Style::default()),
-            };
-
-            frame_buffer.set_string(rect.x, y, character, style);
-        }
-
-        if line_number_width > 0 {
-            let number = format!(
-                "{:>width$} ",
-                line_index + 1,
-                width = line_number_width - 1
-            );
-
-            frame_buffer.set_string(
-                rect.x + git_gutter_width as u16,
-                y,
-                number,
-                fg(c(DIM)),
-            );
-        }
-
         let line = buffer.lines[line_index].clone();
-
         let styles = match kind {
             BufKind::File | BufKind::GitDiff => buffer.line_styles(line_index),
             kind => special_styles(kind, &line, buffer.meta.get(line_index)),
@@ -343,17 +312,92 @@ fn render_window(
             }
         }
 
-        paint_line(
-            frame_buffer,
-            rect.x + (git_gutter_width + line_number_width) as u16,
-            y,
-            text_width,
-            left,
-            tab_width,
-            &line,
-            styles.as_deref(),
-            &overlays,
-        );
+        let segments = if editor.wrap {
+            crate::editor::wrap_segments(&line, tab_width, text_width)
+        } else {
+            vec![(left, left.saturating_add(text_width))]
+        };
+        let first_segment = if editor.wrap && line_index == top {
+            segments
+                .iter()
+                .position(|(segment_left, _)| *segment_left == left)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        for (segment_index, &(segment_left, _)) in segments.iter().enumerate().skip(first_segment) {
+            if visual_row >= text_height {
+                break;
+            }
+            let y = rect.y + visual_row as u16;
+            let continuation = editor.wrap && segment_index > 0;
+
+            if continuation {
+                frame_buffer.set_string(
+                    rect.x,
+                    y,
+                    " ".repeat(git_gutter_width + line_number_width),
+                    Style::default(),
+                );
+            } else {
+                if git_gutter_width == 1 {
+                    let mark = buffer.git_marks.get(line_index).copied().unwrap_or(0);
+
+                    let (character, style) = match mark {
+                        MARK_ADDED => ("▎", fg(c(INFO))),
+                        MARK_MODIFIED => ("▎", fg(c(WARN))),
+                        MARK_DELETED => ("▁", fg(c(ERROR))),
+                        _ => (" ", Style::default()),
+                    };
+                    frame_buffer.set_string(rect.x, y, character, style);
+                }
+
+                if line_number_width > 0 {
+                    let number = format!(
+                        "{:>width$} ",
+                        line_index + 1,
+                        width = line_number_width - 1
+                    );
+                    frame_buffer.set_string(
+                        rect.x + git_gutter_width as u16,
+                        y,
+                        number,
+                        fg(c(DIM)),
+                    );
+                }
+            }
+
+            paint_line(
+                frame_buffer,
+                rect.x + (git_gutter_width + line_number_width) as u16,
+                y,
+                text_width,
+                if editor.wrap { segment_left } else { left },
+                tab_width,
+                &line,
+                styles.as_deref(),
+                &overlays,
+            );
+
+            if editor.wrap && is_active && cursor.line == line_index {
+                let display_column = display_col(&line, cursor.col, tab_width);
+                let segment_end = segments[segment_index].1;
+                let is_last_segment = segment_index + 1 == segments.len();
+                if display_column >= segment_left
+                    && (display_column < segment_end
+                        || (is_last_segment && display_column <= segment_end))
+                {
+                    let x = rect.x
+                        + (git_gutter_width + line_number_width) as u16
+                        + display_column.saturating_sub(segment_left) as u16;
+                    if x < rect.x + rect.width {
+                        *cursor_position = Some((x, y));
+                    }
+                }
+            }
+
+            visual_row += 1;
+        }
     }
 
     // ---- mode line
@@ -472,7 +516,7 @@ fn render_window(
         );
     }
 
-    if is_active && cursor_position.is_none() {
+    if is_active && !editor.wrap && cursor_position.is_none() {
         let display_column = display_col(
             &buffer.lines[cursor.line],
             cursor.col,
@@ -715,5 +759,36 @@ pub fn render(frame: &mut Frame, editor: &mut Editor) {
 
     if let Some((x, y)) = cursor {
         frame.set_cursor_position(Position::new(x, y));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wrapped_render_places_cursor_on_continuation_row() {
+        let mut editor = Editor::new();
+        editor.buf_mut().set_text("abcdefghij");
+        editor.buf_mut().cursor = Pos::new(0, 8);
+        editor.wrap = true;
+        editor.text_w = 6;
+        editor.text_h = 2;
+        editor.fix_scroll();
+
+        let rect = Rect::new(0, 0, 6, 3);
+        let mut frame = ratatui::buffer::Buffer::empty(rect);
+        let mut cursor_position = None;
+        render_window(
+            &mut frame,
+            &mut editor,
+            &Window::new(0, 0),
+            rect,
+            true,
+            None,
+            &mut cursor_position,
+        );
+
+        assert_eq!(cursor_position, Some((2, 1)));
     }
 }

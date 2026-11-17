@@ -724,7 +724,7 @@ impl Editor {
         by_cmd.sort_by(|a, b| a.0.cmp(b.0));
 
         let mut t = String::from("OW Editor — Key bindings\n");
-        t.push_str("C- = Ctrl | M- = Alt (or ESC prefix) | SPC = Space leader\n\n");
+        t.push_str("C- = Ctrl | M- = Alt | SPC = Space leader\n\n");
 
         t.push_str("VIM — NORMAL MODE\n");
         t.push_str("  h / j / k / l       left / down / up / right\n");
@@ -740,6 +740,7 @@ impl Editor {
         t.push_str("  d/c/y{motion}       delete / change / yank (dd, 3dw, d$, dgg)\n");
         t.push_str("  d/c/y i{object}     inner object (ciw, diw, yi\")\n");
         t.push_str("  d/c/y a{object}     around object (daw, da\", ca(), ya[)\n");
+        t.push_str("  ={motion} / ==      reindent lines\n");
         t.push_str("  Objects: w, \", ', `, (), [], {}, <> (nested pairs may span lines)\n");
         t.push_str("  x / D / Y           delete char / to line end / yank line\n");
         t.push_str("  p / P               paste after / before cursor\n");
@@ -772,6 +773,7 @@ impl Editor {
         t.push_str("  c                   change selection and enter Insert\n");
         t.push_str("  y                   yank selection\n");
         t.push_str("  J / K               move selected lines down / up\n");
+        t.push_str("  < / >               unindent / indent selection, keep it selected\n");
         t.push_str("  C-v                 enter Visual Block; d/x delete rectangle, y yank rectangle, c change\n");
         t.push_str("  v / V / ESC         exit or switch visual mode\n\n");
 
@@ -785,6 +787,7 @@ impl Editor {
         t.push_str("  SPC s               search forward in buffer\n");
         t.push_str("  SPC x               select directory\n");
         t.push_str("  SPC q               close current buffer\n");
+        t.push_str("  SPC l w             toggle line wrap\n");
         t.push_str("  SPC TAB / SPC S-TAB next / previous buffer\n");
         t.push_str("  SPC w w             save buffer\n");
         t.push_str("  SPC w q             close window (or quit if last)\n");
@@ -872,6 +875,21 @@ type Cmd = fn(&mut Editor);
 
 pub static COMMANDS: &[(&str, Cmd)] = &[
     ("self-insert-command", |e| e.self_insert()),
+    ("forward-char", |e| e.forward_char()),
+    ("backward-char", |e| e.backward_char()),
+    ("next-line", |e| e.next_line()),
+    ("previous-line", |e| e.previous_line()),
+    ("beginning-of-line", |e| e.bol()),
+    ("end-of-line", |e| e.eol()),
+    ("forward-word", |e| e.fwd_word()),
+    ("backward-word", |e| e.bwd_word()),
+    ("beginning-of-buffer", |e| e.bob()),
+    ("end-of-buffer", |e| e.eob()),
+    ("scroll-up-command", |e| e.scroll_up()),
+    ("scroll-down-command", |e| e.scroll_down()),
+    ("back-to-indentation", |e| e.back_to_indentation()),
+    ("forward-paragraph", |e| e.forward_paragraph()),
+    ("backward-paragraph", |e| e.backward_paragraph()),
     ("newline", |e| e.newline()),
     ("newline-and-indent", |e| e.newline_indent()),
     ("open-line", |e| e.open_line()),
@@ -997,6 +1015,27 @@ pub static REPEATABLE: &[&str] = &[
 ];
 
 pub static BINDINGS: &[(&str, &str)] = &[
+    ("C-f", "forward-char"),
+    ("C-b", "backward-char"),
+    ("C-n", "next-line"),
+    ("C-p", "previous-line"),
+    ("C-a", "beginning-of-line"),
+    ("C-e", "end-of-line"),
+    ("M-f", "forward-word"),
+    ("M-b", "backward-word"),
+    ("M-<", "beginning-of-buffer"),
+    ("M->", "end-of-buffer"),
+    ("C-v", "scroll-down-command"),
+    ("M-v", "scroll-up-command"),
+    ("M-m", "back-to-indentation"),
+    ("M-{", "backward-paragraph"),
+    ("M-}", "forward-paragraph"),
+    ("C-<left>", "backward-word"),
+    ("C-<right>", "forward-word"),
+    ("C-<home>", "beginning-of-buffer"),
+    ("C-<end>", "end-of-buffer"),
+    ("<pageup>", "scroll-up-command"),
+    ("<pagedown>", "scroll-down-command"),
     ("C-l", "recenter"),
     ("M-g g", "goto-line"),
     ("M-g M-g", "goto-line"),
