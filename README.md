@@ -7,6 +7,10 @@ Binary name: `ow`.
 ```bash
 cargo build --release      # target/release/ow
 ow [+LINE] [FILE...]       # ow --help, ow --list-languages
+
+mkdir -p ~/.local/bin
+
+ln -sf ~/projetos/ow/target/release/ow ~/.local/bin/ow
 ```
 
 ## Editing model

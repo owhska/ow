@@ -921,7 +921,7 @@ impl Editor {
                 "SPC g T" => { self.vim_pending.clear(); self.vim_resolve_conflict(false); return true; }
 
                 // Project grep moved here to free <leader>g for Git.
-                "SPC p g" => {
+                "SPC SPC" => {
                     self.vim_pending.clear();
                     self.project_grep_cmd();
                     return true;

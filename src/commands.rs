@@ -781,7 +781,7 @@ impl Editor {
         t.push_str("  SPC f               find file in project\n");
         t.push_str("  SPC r f / SPC r s   recent files / search history\n");
         t.push_str("  SPC b m / SPC b b   bookmark current file / open bookmark\n");
-        t.push_str("  SPC p g             grep in project\n");
+        t.push_str("  SPC SPC             grep in project\n");
         t.push_str("  SPC e               file explorer (Dired)\n");
         t.push_str("  SPC t               terminal (reserved)\n");
         t.push_str("  SPC s               search forward in buffer\n");
