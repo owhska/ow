@@ -7,6 +7,9 @@ impl Editor {
             if n == "SPC" || self.vim_pending.starts_with("SPC") {
                 return self.handle_vim_normal(key);
             }
+            if n == "C-x" {
+                return false;
+            }
             if n.starts_with("M-") || n.starts_with("C-M-") {
                 return false;
             }

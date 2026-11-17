@@ -594,6 +594,9 @@ fn dired_allows_vim_leader_and_meta_commands() {
 
     keys(&mut e, "M-x");
     assert!(matches!(e.mode, Mode::Prompt(_)));
+    e.mode = Mode::Normal;
+    keys(&mut e, "C-x 2");
+    assert_eq!(e.windows.len(), 2);
 
     std::fs::remove_dir_all(dir).ok();
 }
