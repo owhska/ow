@@ -4,6 +4,7 @@ use git2::{
     Patch, PushOptions, RemoteCallbacks, Repository, Sort, StatusOptions,
 };
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 pub type Res<T> = Result<T, git2::Error>;
 
@@ -483,8 +484,42 @@ pub fn push(repo: &Repository) -> Res<String> {
     let mut po = PushOptions::new();
     po.remote_callbacks(callbacks());
     let spec = format!("refs/heads/{branch}:refs/heads/{branch}");
-    remote.push(&[spec], Some(&mut po))?;
-    Ok(format!("Pushed {branch} to {remote_name}"))
+    match remote.push(&[spec], Some(&mut po)) {
+        Ok(()) => Ok(format!("Pushed {branch} to {remote_name}")),
+        Err(error) if error.message().contains("Unable to exchange encryption keys") => {
+            push_with_git(repo, &remote_name, &branch)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn push_with_git(repo: &Repository, remote: &str, branch: &str) -> Res<String> {
+    let root = repo.workdir().unwrap_or_else(|| repo.path());
+    let spec = format!("refs/heads/{branch}:refs/heads/{branch}");
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .arg("push")
+        .arg(remote)
+        .arg(&spec)
+        .output()
+        .map_err(|error| {
+            git2::Error::from_str(&format!(
+                "SSH key exchange failed in libgit2, and system git could not be started: {error}"
+            ))
+        })?;
+
+    if output.status.success() {
+        return Ok(format!("Pushed {branch} to {remote} using system git"));
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let message = stderr.trim();
+    Err(git2::Error::from_str(if message.is_empty() {
+        "system git push failed"
+    } else {
+        message
+    }))
 }
 
 pub fn pull(repo: &Repository) -> Res<String> {
@@ -634,6 +669,30 @@ mod tests {
         let i = info(&repo);
         assert_eq!((i.staged, i.modified, i.untracked), (0, 0, 0));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn system_git_push_sends_current_branch_to_remote() {
+        let dir = tmp("push-src");
+        let remote_dir = tmp("push-dest");
+        let remote_repo = Repository::init_bare(&remote_dir).unwrap();
+        let repo = Repository::init(&dir).unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "T").unwrap();
+        cfg.set_str("user.email", "t@e.x").unwrap();
+        std::fs::write(dir.join("file.txt"), "contents\n").unwrap();
+        stage(&repo, "file.txt").unwrap();
+        commit(&repo, "initial", false).unwrap();
+        let branch = repo.head().unwrap().shorthand().unwrap().to_string();
+        repo.remote("origin", remote_dir.to_str().unwrap()).unwrap();
+
+        push_with_git(&repo, "origin", &branch).unwrap();
+
+        assert!(remote_repo
+            .find_reference(&format!("refs/heads/{branch}"))
+            .is_ok());
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(remote_dir).ok();
     }
 
     #[test]
