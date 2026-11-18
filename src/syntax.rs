@@ -114,7 +114,7 @@ fn custom_theme() -> Theme {
         }
     };
     // Later / more specific selectors win.
-    add("comment, punctuation.definition.comment", Some(COMMENT), Some(FontStyle::ITALIC));
+    add("comment, punctuation.definition.comment", Some(COMMENT), None);
     add("string, punctuation.definition.string", Some(STRING), None);
     add("constant, support.constant, variable.other.constant, constant.numeric, keyword.other.unit", Some(CONST), None);
     add("constant.character.escape, constant.other.placeholder, constant.other.placeholder punctuation", Some(SPECIAL), None);
@@ -139,7 +139,6 @@ fn custom_theme() -> Theme {
     add("entity.other.attribute-name", Some(FUNC), None);
     add("markup.heading, entity.name.section", Some(FUNC), Some(FontStyle::BOLD));
     add("markup.bold", None, Some(FontStyle::BOLD));
-    add("markup.italic", None, Some(FontStyle::ITALIC));
     add("markup.underline.link, string.other.link", Some(FUNC), Some(FontStyle::UNDERLINE));
     add("markup.raw, markup.inline.raw, markup.quote", Some(STRING), None);
     add("markup.inserted, meta.diff.header.to-file", Some(INFO), None);
@@ -186,7 +185,7 @@ fn tok_style(t: Tok) -> Style {
             Tok::Keyword => f(KEYWORD),
             Tok::Type => f(TYPE),
             Tok::Str => f(STRING),
-            Tok::Comment => f(COMMENT).add_modifier(Modifier::ITALIC),
+            Tok::Comment => f(COMMENT),
             Tok::Number => f(CONST),
             Tok::Func => f(FUNC),
             Tok::Attr => f(SPECIAL),
@@ -204,7 +203,7 @@ fn tok_style(t: Tok) -> Style {
         Tok::Keyword => c((180, 142, 173), (136, 57, 150)),
         Tok::Type => c((235, 203, 139), (150, 100, 0)),
         Tok::Str => c((163, 190, 140), (40, 120, 40)),
-        Tok::Comment => c((101, 115, 126), (110, 120, 130)).add_modifier(Modifier::ITALIC),
+        Tok::Comment => c((101, 115, 126), (110, 120, 130)),
         Tok::Number => c((208, 135, 112), (190, 70, 30)),
         Tok::Func => c((143, 161, 179), (30, 80, 170)),
         Tok::Attr => c((150, 181, 180), (0, 120, 130)),
@@ -569,9 +568,6 @@ fn conv(s: SyStyle) -> Style {
     if s.font_style.contains(FontStyle::BOLD) {
         st = st.add_modifier(Modifier::BOLD);
     }
-    if s.font_style.contains(FontStyle::ITALIC) {
-        st = st.add_modifier(Modifier::ITALIC);
-    }
     if s.font_style.contains(FontStyle::UNDERLINE) {
         st = st.add_modifier(Modifier::UNDERLINED);
     }
@@ -674,5 +670,17 @@ mod tests {
         let lines = vec!["fn main() {".to_string(), "    let x = 1;".to_string()];
         let s = h.line_styles(&lines, 1).unwrap();
         assert_eq!(s.len(), lines[1].chars().count());
+    }
+
+    #[test]
+    fn italic_styles_are_disabled_for_comments_and_themes() {
+        assert!(!tok_style(Tok::Comment)
+            .add_modifier
+            .contains(Modifier::ITALIC));
+        let themed = conv(SyStyle {
+            font_style: FontStyle::ITALIC,
+            ..SyStyle::default()
+        });
+        assert!(!themed.add_modifier.contains(Modifier::ITALIC));
     }
 }
