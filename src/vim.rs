@@ -1042,7 +1042,7 @@ impl Editor {
                     self.win_tree.resize_split(
                         self.active_win_id,
                         SplitDir::Vertical,
-                        -0.05,
+                        0.05,
                     );
                     return true;
                 }
@@ -1051,7 +1051,7 @@ impl Editor {
                     self.win_tree.resize_split(
                         self.active_win_id,
                         SplitDir::Vertical,
-                        0.05,
+                        -0.05,
                     );
                     return true;
                 }

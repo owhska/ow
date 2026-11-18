@@ -213,6 +213,13 @@ pub enum WindowTree {
     },
 }
 
+#[derive(Clone, Debug)]
+pub struct MouseResize {
+    path: Vec<bool>,
+    dir: SplitDir,
+    area: ratatui::layout::Rect,
+}
+
 impl WindowTree {
     pub fn leaves(&self) -> Vec<usize> {
         let mut out = Vec::new();
@@ -301,6 +308,93 @@ impl WindowTree {
         }
     }
 
+    fn split_at(
+        &self,
+        area: ratatui::layout::Rect,
+        column: u16,
+        row: u16,
+        path: &mut Vec<bool>,
+    ) -> Option<(Vec<bool>, SplitDir, ratatui::layout::Rect)> {
+        use ratatui::layout::Rect;
+        let WindowTree::Split {
+            dir,
+            ratio,
+            first,
+            second,
+        } = self
+        else {
+            return None;
+        };
+
+        let (first_area, second_area, boundary) = match dir {
+            SplitDir::Horizontal if area.height > 3 => {
+                let mut h1 = (area.height as f32 * ratio).round() as u16;
+                h1 = h1.clamp(2, area.height.saturating_sub(2));
+                let boundary = area.y + h1;
+                (
+                    Rect::new(area.x, area.y, area.width, h1),
+                    Rect::new(area.x, boundary, area.width, area.height - h1),
+                    boundary,
+                )
+            }
+            SplitDir::Vertical if area.width > 10 => {
+                let rem_w = area.width.saturating_sub(1);
+                let mut w1 = (rem_w as f32 * ratio).round() as u16;
+                w1 = w1.clamp(4, rem_w.saturating_sub(4));
+                let boundary = area.x + w1;
+                (
+                    Rect::new(area.x, area.y, w1, area.height),
+                    Rect::new(boundary + 1, area.y, rem_w - w1, area.height),
+                    boundary,
+                )
+            }
+            _ => return None,
+        };
+
+        let on_boundary = match dir {
+            SplitDir::Horizontal => row.abs_diff(boundary) <= 1 && column >= area.x && column < area.x + area.width,
+            SplitDir::Vertical => column == boundary && row >= area.y && row < area.y + area.height,
+        };
+        if on_boundary {
+            return Some((path.clone(), *dir, area));
+        }
+
+        path.push(false);
+        if let Some(found) = first.split_at(first_area, column, row, path) {
+            return Some(found);
+        }
+        path.pop();
+        path.push(true);
+        if let Some(found) = second.split_at(second_area, column, row, path) {
+            return Some(found);
+        }
+        path.pop();
+        None
+    }
+
+    fn set_ratio_at_path(&mut self, path: &[bool], ratio: f32) -> bool {
+        match self {
+            WindowTree::Split {
+                ratio: current,
+                first,
+                second,
+                ..
+            } => {
+                if let Some((next, rest)) = path.split_first() {
+                    if *next {
+                        second.set_ratio_at_path(rest, ratio)
+                    } else {
+                        first.set_ratio_at_path(rest, ratio)
+                    }
+                } else {
+                    *current = ratio.clamp(0.1, 0.9);
+                    true
+                }
+            }
+            WindowTree::Leaf(_) => false,
+        }
+    }
+
     pub fn compute_rects(
         &self,
         area: ratatui::layout::Rect,
@@ -367,6 +461,7 @@ pub struct Editor {
     pub active_win_id: usize,
     pub next_win_id: usize,
     pub win_tree: WindowTree,
+    pub mouse_resize: Option<MouseResize>,
     pub vim_mode: VimMode,
     pub last_click: Option<(Instant, usize, usize)>,
     pub vim_pending: String,
@@ -455,6 +550,7 @@ impl Editor {
             active_win_id: 1,
             next_win_id: 2,
             win_tree: WindowTree::Leaf(1),
+            mouse_resize: None,
             vim_mode: VimMode::Normal,
             last_click: None,
             vim_pending: String::new(),
@@ -1389,6 +1485,40 @@ impl Editor {
         let mut win_rects = Vec::new();
         let mut separators = Vec::new();
         self.win_tree.compute_rects(win_area, &mut win_rects, &mut separators);
+
+        if ev.kind == MouseEventKind::Up(MouseButton::Left) {
+            self.mouse_resize = None;
+            return;
+        }
+
+        if ev.kind == MouseEventKind::Drag(MouseButton::Left) {
+            if let Some(resize) = &self.mouse_resize {
+                let offset = match resize.dir {
+                    SplitDir::Vertical => {
+                        ev.column.saturating_sub(resize.area.x) as f32
+                            / resize.area.width.saturating_sub(1).max(1) as f32
+                    }
+                    SplitDir::Horizontal => {
+                        ev.row.saturating_sub(resize.area.y) as f32
+                            / resize.area.height.max(1) as f32
+                    }
+                };
+                self.win_tree.set_ratio_at_path(&resize.path, offset);
+                return;
+            }
+        }
+
+        if ev.kind == MouseEventKind::Down(MouseButton::Left) {
+            let mut path = Vec::new();
+            if let Some((path, dir, area)) =
+                self.win_tree
+                    .split_at(win_area, ev.column, ev.row, &mut path)
+            {
+                self.mouse_resize = Some(MouseResize { path, dir, area });
+                return;
+            }
+            self.mouse_resize = None;
+        }
 
         let found = win_rects.iter().find(|(_, r)| {
             ev.column >= r.x && ev.column < r.x + r.width && ev.row >= r.y && ev.row < r.y + r.height

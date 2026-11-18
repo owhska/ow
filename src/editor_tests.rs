@@ -417,6 +417,28 @@ fn window_splitting_and_navigation() {
 }
 
 #[test]
+fn leader_left_and_right_resize_vertical_split_in_matching_direction() {
+    let mut e = Editor::new();
+    e.vim_mode = VimMode::Normal;
+    e.split_window_right();
+
+    let ratio = |tree: &WindowTree| match tree {
+        WindowTree::Split {
+            dir: SplitDir::Vertical,
+            ratio,
+            ..
+        } => *ratio,
+        _ => panic!("expected a vertical split"),
+    };
+
+    let initial = ratio(&e.win_tree);
+    keys(&mut e, "SPC <right>");
+    assert!(ratio(&e.win_tree) < initial);
+    keys(&mut e, "SPC <left>");
+    assert!((ratio(&e.win_tree) - initial).abs() < f32::EPSILON);
+}
+
+#[test]
 fn vim_motions_and_editing() {
     let dir = tmpdir("vimmotions");
     let mut e = Editor::new();
@@ -928,4 +950,87 @@ fn mouse_scroll_does_not_change_focus_and_scrolls_hovered_window() {
 
     assert_eq!(e.active_win_id, active_id);
     assert!(e.windows.iter().find(|window| window.id == other_id).unwrap().top > 0);
+}
+
+#[test]
+fn dragging_window_dividers_resizes_splits() {
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+
+    let mut vertical = Editor::new();
+    vertical.screen_w = 80;
+    vertical.screen_h = 24;
+    vertical.split_window_right();
+    let WindowTree::Split {
+        ratio: before,
+        dir: SplitDir::Vertical,
+        ..
+    } = &vertical.win_tree
+    else {
+        panic!("expected a vertical split");
+    };
+    let before = *before;
+
+    vertical.on_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 40,
+        row: 3,
+        modifiers: KeyModifiers::NONE,
+    });
+    vertical.on_mouse(MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        column: 48,
+        row: 3,
+        modifiers: KeyModifiers::NONE,
+    });
+    vertical.on_mouse(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: 48,
+        row: 3,
+        modifiers: KeyModifiers::NONE,
+    });
+
+    let WindowTree::Split { ratio: after, .. } = &vertical.win_tree else {
+        panic!("expected the split to remain");
+    };
+    assert!(*after > before);
+    assert!(vertical.mouse_resize.is_none());
+
+    let mut horizontal = Editor::new();
+    horizontal.screen_w = 80;
+    horizontal.screen_h = 24;
+    horizontal.split_window_below();
+    let WindowTree::Split {
+        ratio: before,
+        dir: SplitDir::Horizontal,
+        ..
+    } = &horizontal.win_tree
+    else {
+        panic!("expected a horizontal split");
+    };
+    let before = *before;
+
+    horizontal.on_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 10,
+        row: 12,
+        modifiers: KeyModifiers::NONE,
+    });
+    horizontal.on_mouse(MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        column: 10,
+        row: 16,
+        modifiers: KeyModifiers::NONE,
+    });
+    horizontal.on_mouse(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: 10,
+        row: 16,
+        modifiers: KeyModifiers::NONE,
+    });
+
+    let WindowTree::Split { ratio: after, .. } = &horizontal.win_tree else {
+        panic!("expected the split to remain");
+    };
+    assert!(*after > before);
+    assert!(horizontal.mouse_resize.is_none());
 }
