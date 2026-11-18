@@ -132,6 +132,7 @@ Normal-mode macro recording (`q{register}` / `@{register}`) is intentionally not
 | `SPC b b` | Open file bookmarks |
 | `SPC p g` | Search text in project |
 | `SPC e` | Open directory explorer |
+| `SPC z` | Toggle the left project-tree sidebar; expand directories and open files in new windows on the right |
 | `SPC TAB` | Next buffer |
 | `SPC S-TAB` | Previous buffer |
 | `SPC t` | Reserved |

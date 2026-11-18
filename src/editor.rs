@@ -220,6 +220,24 @@ pub struct MouseResize {
     area: ratatui::layout::Rect,
 }
 
+#[derive(Clone, Debug)]
+pub struct ProjectTreeEntry {
+    pub path: PathBuf,
+    pub name: String,
+    pub depth: usize,
+    pub is_dir: bool,
+    pub expanded: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct ProjectTree {
+    pub root: PathBuf,
+    pub entries: Vec<ProjectTreeEntry>,
+    pub cursor: usize,
+    pub top: usize,
+    pub pending: String,
+}
+
 impl WindowTree {
     pub fn leaves(&self) -> Vec<usize> {
         let mut out = Vec::new();
@@ -462,6 +480,10 @@ pub struct Editor {
     pub next_win_id: usize,
     pub win_tree: WindowTree,
     pub mouse_resize: Option<MouseResize>,
+    pub tree_expanded: HashSet<PathBuf>,
+    pub project_tree: Option<ProjectTree>,
+    pub project_tree_open: bool,
+    pub project_tree_focused: bool,
     pub vim_mode: VimMode,
     pub last_click: Option<(Instant, usize, usize)>,
     pub vim_pending: String,
@@ -551,6 +573,10 @@ impl Editor {
             next_win_id: 2,
             win_tree: WindowTree::Leaf(1),
             mouse_resize: None,
+            tree_expanded: HashSet::new(),
+            project_tree: None,
+            project_tree_open: false,
+            project_tree_focused: false,
             vim_mode: VimMode::Normal,
             last_click: None,
             vim_pending: String::new(),
@@ -1043,6 +1069,181 @@ impl Editor {
         }
     }
 
+    pub fn project_tree_root(&self) -> Option<PathBuf> {
+        self.project_tree.as_ref().map(|tree| tree.root.clone())
+    }
+
+    pub fn open_project_tree(&mut self, root: &Path) {
+        let root = match std::fs::canonicalize(root) {
+            Ok(path) if path.is_dir() => path,
+            _ => {
+                self.say(format!("Project tree: not a directory: {}", root.display()));
+                return;
+            }
+        };
+        self.tree_expanded.insert(root.clone());
+        self.project_tree = Some(ProjectTree {
+            root: root.clone(),
+            entries: Vec::new(),
+            cursor: 0,
+            top: 0,
+            pending: String::new(),
+        });
+        self.refresh_project_tree(None);
+        self.project_tree_open = true;
+        self.project_tree_focused = true;
+        self.proj_root = Some(root);
+    }
+
+    fn refresh_project_tree(&mut self, selected: Option<&Path>) {
+        let Some(root) = self.project_tree.as_ref().map(|tree| tree.root.clone()) else {
+            return;
+        };
+        let mut entries = Vec::new();
+        self.append_project_tree(&root, 0, &mut entries);
+        if let Some(tree) = self.project_tree.as_mut() {
+            tree.entries = entries;
+            if let Some(selected) = selected {
+                if let Some(cursor) = tree.entries.iter().position(|entry| entry.path == selected) {
+                    tree.cursor = cursor;
+                } else {
+                    tree.cursor = tree.cursor.min(tree.entries.len().saturating_sub(1));
+                }
+            }
+            tree.top = tree.top.min(tree.cursor);
+        }
+    }
+
+    fn append_project_tree(
+        &self,
+        dir: &Path,
+        depth: usize,
+        entries: &mut Vec<ProjectTreeEntry>,
+    ) {
+        let Ok(dir_entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let mut dir_entries: Vec<_> = dir_entries.flatten().collect();
+        dir_entries.sort_by(|a, b| {
+            let a_dir = a.file_type().is_ok_and(|kind| kind.is_dir());
+            let b_dir = b.file_type().is_ok_and(|kind| kind.is_dir());
+            b_dir
+                .cmp(&a_dir)
+                .then_with(|| a.file_name().to_string_lossy().to_lowercase()
+                    .cmp(&b.file_name().to_string_lossy().to_lowercase()))
+        });
+
+        for entry in dir_entries {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if matches!(name.as_str(), ".git" | "target" | "node_modules") {
+                continue;
+            }
+            let path = entry.path();
+            let is_dir = entry.file_type().is_ok_and(|kind| kind.is_dir());
+            let expanded = is_dir && self.tree_expanded.contains(&path);
+            entries.push(ProjectTreeEntry {
+                path: path.clone(),
+                name,
+                depth,
+                is_dir,
+                expanded,
+            });
+            if expanded {
+                self.append_project_tree(&path, depth + 1, entries);
+            }
+        }
+    }
+
+    pub fn toggle_project_tree_directory(&mut self, path: &Path) {
+        if self.tree_expanded.contains(path) {
+            self.tree_expanded.remove(path);
+        } else {
+            self.tree_expanded.insert(path.to_path_buf());
+        }
+        self.refresh_project_tree(Some(path));
+    }
+
+    pub fn project_tree_selected_path(&self) -> Option<PathBuf> {
+        self.project_tree
+            .as_ref()
+            .and_then(|tree| tree.entries.get(tree.cursor))
+            .map(|entry| entry.path.clone())
+    }
+
+    fn project_tree_current_dir(&self) -> Option<PathBuf> {
+        let tree = self.project_tree.as_ref()?;
+        match tree.entries.get(tree.cursor) {
+            Some(entry) if entry.is_dir => Some(entry.path.clone()),
+            Some(entry) => entry.path.parent().map(Path::to_path_buf),
+            None => Some(tree.root.clone()),
+        }
+    }
+
+    pub fn project_tree_width(&self) -> u16 {
+        if !self.project_tree_open || self.screen_w < 30 {
+            return 0;
+        }
+        (self.screen_w / 4).clamp(18, 30).min(self.screen_w.saturating_sub(13))
+    }
+
+    fn move_project_tree_cursor(&mut self, delta: isize) {
+        let Some(tree) = self.project_tree.as_mut() else { return };
+        if tree.entries.is_empty() {
+            tree.cursor = 0;
+        } else if delta < 0 {
+            tree.cursor = tree.cursor.saturating_sub(delta.unsigned_abs());
+        } else {
+            tree.cursor = tree.cursor.saturating_add(delta as usize).min(tree.entries.len() - 1);
+        }
+        self.fix_project_tree_scroll();
+    }
+
+    fn fix_project_tree_scroll(&mut self) {
+        let height = self.screen_h.saturating_sub(2) as usize;
+        if height == 0 {
+            return;
+        }
+        if let Some(tree) = self.project_tree.as_mut() {
+            if tree.cursor < tree.top {
+                tree.top = tree.cursor;
+            } else if tree.cursor >= tree.top + height {
+                tree.top = tree.cursor + 1 - height;
+            }
+        }
+    }
+
+    fn open_project_tree_file(&mut self, path: &Path) {
+        self.split_window_right();
+        let new_window = self.next_win_id - 1;
+        self.set_active_window(new_window);
+        match self.open_path(path) {
+            Ok(index) => {
+                self.switch_to(index);
+                self.project_tree_focused = false;
+            }
+            Err(error) => {
+                self.say(error);
+                self.delete_window();
+            }
+        }
+    }
+
+    pub fn visit_project_tree_entry(&mut self) {
+        let Some(entry) = self
+            .project_tree
+            .as_ref()
+            .and_then(|tree| tree.entries.get(tree.cursor))
+            .cloned()
+        else {
+            return;
+        };
+        if entry.is_dir {
+            self.toggle_project_tree_directory(&entry.path);
+        } else {
+            self.open_project_tree_file(&entry.path);
+        }
+    }
+
     pub fn copy_file(&mut self, path: PathBuf) {
         if !path_exists(path.as_path()) {
             self.say(format!("Copy failed: {} no longer exists", path.display()));
@@ -1166,6 +1367,10 @@ impl Editor {
 
     /// Refresh the current listing while keeping the selected entry if possible.
     pub fn dired_refresh(&mut self) {
+        if self.project_tree_open {
+            let selected = self.project_tree_selected_path();
+            self.refresh_project_tree(selected.as_deref());
+        }
         if self.buf().kind != BufKind::Dired {
             return;
         }
@@ -1385,6 +1590,13 @@ impl Editor {
     // ---------------------------------------------------------- key input
     pub fn on_key(&mut self, ev: KeyEvent) {
         let Some(key) = keys::parse(&ev) else { return };
+        if matches!(self.mode, Mode::Normal)
+            && self.project_tree_open
+            && self.project_tree_focused
+            && self.handle_project_tree_key(&key)
+        {
+            return;
+        }
         let mode = std::mem::replace(&mut self.mode, Mode::Normal);
         match mode {
             Mode::Normal => {
@@ -1410,6 +1622,120 @@ impl Editor {
             Mode::QReplace(q) => self.qr_key(q, key),
             Mode::YesNo(y) => self.yesno_key(y, key),
         }
+    }
+
+    fn handle_project_tree_key(&mut self, key: &Key) -> bool {
+        let name = key.name.as_str();
+        if !self.pending.is_empty()
+            || self.vim_pending.starts_with("SPC")
+            || name == "SPC"
+            || name == "C-g"
+            || name.starts_with("M-")
+            || name.starts_with("C-x")
+        {
+            return false;
+        }
+
+        if self.project_tree.as_ref().is_some_and(|tree| tree.pending == "g") {
+            if let Some(tree) = self.project_tree.as_mut() {
+                tree.pending.clear();
+                if name == "g" {
+                    tree.cursor = 0;
+                    self.fix_project_tree_scroll();
+                }
+            }
+            return true;
+        }
+
+        match name {
+            "j" | "<down>" | "n" => self.move_project_tree_cursor(1),
+            "k" | "<up>" => self.move_project_tree_cursor(-1),
+            "G" => {
+                if let Some(tree) = self.project_tree.as_mut() {
+                    tree.cursor = tree.entries.len().saturating_sub(1);
+                }
+                self.fix_project_tree_scroll();
+            }
+            "g" => {
+                if let Some(tree) = self.project_tree.as_mut() {
+                    tree.pending = "g".to_string();
+                }
+            }
+            "C-f" | "C-d" => {
+                let amount = self.screen_h.saturating_sub(2).max(1) as isize;
+                self.move_project_tree_cursor(amount);
+            }
+            "C-b" | "C-u" => {
+                let amount = self.screen_h.saturating_sub(2).max(1) as isize;
+                self.move_project_tree_cursor(-amount);
+            }
+            "RET" | "l" | "<right>" => self.visit_project_tree_entry(),
+            "h" | "<left>" => {
+                if let Some(entry) = self
+                    .project_tree
+                    .as_ref()
+                    .and_then(|tree| tree.entries.get(tree.cursor))
+                    .cloned()
+                {
+                    if entry.is_dir && entry.expanded {
+                        self.toggle_project_tree_directory(&entry.path);
+                    } else if let Some(parent) = entry.path.parent()
+                        && let Some(tree) = self.project_tree.as_mut()
+                        && let Some(index) = tree.entries.iter().position(|item| item.path == parent)
+                    {
+                        tree.cursor = index;
+                        self.fix_project_tree_scroll();
+                    }
+                }
+            }
+            "c" | "x" | "d" | "r" => {
+                let Some(path) = self.project_tree_selected_path() else {
+                    return true;
+                };
+                let dir = self.project_tree_current_dir().unwrap_or_else(|| {
+                    self.project_tree_root().unwrap_or_else(|| self.cwd.clone())
+                });
+                match name {
+                    "c" => self.copy_file(path),
+                    "x" => self.cut_file(path),
+                    "d" => self.delete_file(path),
+                    "r" => {
+                        let old_name = path.file_name().unwrap_or_default().to_string_lossy();
+                        let label = format!("Rename {old_name} to: ");
+                        self.start_prompt(Prompt::new(
+                            &label,
+                            PKind::DiredRename { dir, source: path },
+                            None,
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+            "p" => {
+                let dest = self.project_tree_current_dir().unwrap_or_else(|| {
+                    self.project_tree_root().unwrap_or_else(|| self.cwd.clone())
+                });
+                self.paste_file(dest);
+            }
+            "%" => {
+                let dir = self.project_tree_current_dir().unwrap_or_else(|| {
+                    self.project_tree_root().unwrap_or_else(|| self.cwd.clone())
+                });
+                self.start_prompt(Prompt::new(
+                    "Create (name or dir/): ",
+                    PKind::DiredCreate(dir),
+                    None,
+                ));
+            }
+            "R" => self.dired_refresh(),
+            "q" => {
+                self.project_tree_open = false;
+                self.project_tree_focused = false;
+            }
+            "TAB" => self.project_tree_focused = false,
+            _ => return false,
+        }
+        true
     }
 
     fn cancel_key_sequences(&mut self) {
@@ -1481,15 +1807,68 @@ impl Editor {
             return;
         }
 
-        let win_area = Rect::new(0, 0, self.screen_w, self.screen_h.saturating_sub(1));
-        let mut win_rects = Vec::new();
-        let mut separators = Vec::new();
-        self.win_tree.compute_rects(win_area, &mut win_rects, &mut separators);
-
         if ev.kind == MouseEventKind::Up(MouseButton::Left) {
             self.mouse_resize = None;
             return;
         }
+
+        let tree_width = self.project_tree_width();
+        if tree_width > 0 && ev.column < tree_width {
+            match ev.kind {
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                    if let Some(tree) = self.project_tree.as_mut() {
+                        let visible = self.screen_h.saturating_sub(2) as usize;
+                        let max_top = tree.entries.len().saturating_sub(visible);
+                        tree.top = if ev.kind == MouseEventKind::ScrollUp {
+                            tree.top.saturating_sub(3)
+                        } else {
+                            tree.top.saturating_add(3).min(max_top)
+                        };
+                    }
+                    return;
+                }
+                MouseEventKind::Down(MouseButton::Left) => {
+                    self.project_tree_focused = true;
+                    if ev.row == 0 {
+                        return;
+                    }
+                    let Some(tree) = self.project_tree.as_mut() else { return };
+                    let line = tree.top + ev.row.saturating_sub(1) as usize;
+                    if line >= tree.entries.len() {
+                        return;
+                    }
+                    tree.cursor = line;
+                    let now = Instant::now();
+                    let double = matches!(
+                        self.last_click,
+                        Some((time, window, previous_line))
+                            if window == usize::MAX
+                                && previous_line == line
+                                && now.duration_since(time).as_millis() < 600
+                    );
+                    if double {
+                        self.last_click = None;
+                        self.visit_project_tree_entry();
+                    } else {
+                        self.last_click = Some((now, usize::MAX, line));
+                    }
+                    return;
+                }
+                MouseEventKind::Up(MouseButton::Left) => {}
+                _ => return,
+            }
+        }
+
+        let window_x = if tree_width > 0 { tree_width + 1 } else { 0 };
+        let win_area = Rect::new(
+            window_x,
+            0,
+            self.screen_w.saturating_sub(window_x),
+            self.screen_h.saturating_sub(1),
+        );
+        let mut win_rects = Vec::new();
+        let mut separators = Vec::new();
+        self.win_tree.compute_rects(win_area, &mut win_rects, &mut separators);
 
         if ev.kind == MouseEventKind::Drag(MouseButton::Left) {
             if let Some(resize) = &self.mouse_resize {
@@ -1551,6 +1930,9 @@ impl Editor {
             ev.kind,
             MouseEventKind::Down(MouseButton::Left)
         );
+        if activates_window && self.project_tree_open {
+            self.project_tree_focused = false;
+        }
         if activates_window && target_win_id != self.active_win_id {
             self.set_active_window(target_win_id);
         }
@@ -1568,6 +1950,31 @@ impl Editor {
                     return;
                 }
                 self.buf_mut().cursor = Pos::new(line, 2);
+                self.buf_mut().mark_active = false;
+                let now = Instant::now();
+                let double = matches!(
+                    self.last_click,
+                    Some((t, w, l)) if w == target_win_id && l == line
+                        && now.duration_since(t).as_millis() < 600
+                );
+                if double {
+                    self.last_click = None;
+                    self.visit_line();
+                } else {
+                    self.last_click = Some((now, target_win_id, line));
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) if self.buf().kind == BufKind::Grep => {
+                let text_h = (rect.height as usize).saturating_sub(1);
+                let click_rel_y = (ev.row as usize).saturating_sub(rect.y as usize);
+                if click_rel_y >= text_h {
+                    return;
+                }
+                let line = self.buf().top + click_rel_y;
+                if !matches!(self.buf().meta.get(line), Some(LineMeta::Grep { .. })) {
+                    return;
+                }
+                self.buf_mut().cursor = Pos::new(line, 0);
                 self.buf_mut().mark_active = false;
                 let now = Instant::now();
                 let double = matches!(

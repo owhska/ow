@@ -776,6 +776,107 @@ fn dired_allows_vim_leader_and_meta_commands() {
 }
 
 #[test]
+fn leader_z_opens_project_tree_and_each_file_in_a_new_window() {
+    let dir = tmpdir("project-tree");
+    let nested = dir.join("src");
+    std::fs::create_dir(&nested).unwrap();
+    let first = nested.join("first.rs");
+    let second = nested.join("second.rs");
+    std::fs::write(&first, "fn first() {}\n").unwrap();
+    std::fs::write(&second, "fn second() {}\n").unwrap();
+
+    let mut e = editor_in(&dir);
+    e.vim_mode = VimMode::Normal;
+    keys(&mut e, "SPC z");
+    assert_eq!(e.windows.len(), 1);
+    assert!(e.project_tree_open);
+    assert!(e.project_tree_focused);
+    assert_eq!(e.buf().name, "*scratch*");
+    assert_eq!(e.project_tree_root().as_deref(), Some(dir.as_path()));
+
+    keys(&mut e, "% new-root.txt RET");
+    assert!(nested.join("new-root.txt").is_file());
+
+    let src_line = e
+        .project_tree
+        .as_ref()
+        .unwrap()
+        .entries
+        .iter()
+        .position(|entry| entry.path == nested)
+        .unwrap();
+    e.project_tree.as_mut().unwrap().cursor = src_line;
+    keys(&mut e, "RET");
+    assert!(e.project_tree.as_ref().unwrap().entries.iter().any(|entry| entry.path == first));
+    assert!(e.project_tree.as_ref().unwrap().entries.iter().any(|entry| entry.path == second));
+
+    for path in [&first, &second] {
+        let line = e
+            .project_tree
+            .as_ref()
+            .unwrap()
+            .entries
+            .iter()
+            .position(|entry| entry.path == *path)
+            .unwrap();
+        e.project_tree.as_mut().unwrap().cursor = line;
+        e.project_tree_focused = true;
+        keys(&mut e, "RET");
+        assert_eq!(e.buf().path.as_deref(), Some(path.as_path()));
+        assert_eq!(e.windows.len(), if path == &first { 2 } else { 3 });
+    }
+
+    keys(&mut e, "SPC z");
+    assert!(!e.project_tree_open);
+    assert_eq!(e.windows.len(), 3);
+    assert_eq!(e.buf().path.as_deref(), Some(second.as_path()));
+
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn leader_and_ctrl_x_shortcuts_work_while_project_tree_is_focused() {
+    let dir = tmpdir("project-tree-shortcuts");
+    std::fs::write(dir.join("file.txt"), "contents\n").unwrap();
+    std::fs::create_dir(dir.join("child")).unwrap();
+
+    let mut e = editor_in(&dir);
+    e.vim_mode = VimMode::Normal;
+    keys(&mut e, "SPC z");
+    assert!(e.project_tree_focused);
+
+    keys(&mut e, "SPC x");
+    assert!(matches!(e.mode, Mode::Prompt(_)), "SPC x was handled as a tree command");
+    keys(&mut e, "ESC");
+    assert!(e.project_tree_focused);
+
+    keys(&mut e, "C-x C-f");
+    assert!(matches!(e.mode, Mode::Prompt(_)), "C-x C-f did not open the file prompt");
+
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn leader_window_navigation_moves_between_project_tree_and_editor() {
+    let dir = tmpdir("project-tree-window-navigation");
+    let mut e = editor_in(&dir);
+    e.vim_mode = VimMode::Normal;
+    keys(&mut e, "SPC z");
+    assert!(e.project_tree_focused);
+
+    let active_window = e.active_win_id;
+    keys(&mut e, "SPC w l");
+    assert!(!e.project_tree_focused);
+    assert_eq!(e.active_win_id, active_window);
+
+    keys(&mut e, "SPC w h");
+    assert!(e.project_tree_focused);
+    assert_eq!(e.active_win_id, active_window);
+
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
 fn escape_cancels_pending_key_sequences() {
     let dir = tmpdir("escape-cancel-sequences");
     let mut e = editor_in(&dir);
@@ -950,6 +1051,35 @@ fn mouse_scroll_does_not_change_focus_and_scrolls_hovered_window() {
 
     assert_eq!(e.active_win_id, active_id);
     assert!(e.windows.iter().find(|window| window.id == other_id).unwrap().top > 0);
+}
+
+#[test]
+fn mouse_selects_and_opens_grep_results() {
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+
+    let dir = tmpdir("mouse-grep-result");
+    std::fs::write(dir.join("a.txt"), "skip\nneedle here\n").unwrap();
+    let mut e = editor_in(&dir);
+    e.screen_w = 80;
+    e.screen_h = 24;
+    keys(&mut e, "C-x p g needle RET");
+    assert_eq!(e.buf().kind, BufKind::Grep);
+    let result_line = e.buf().meta.iter().position(|meta| matches!(meta, LineMeta::Grep { .. })).unwrap();
+
+    let click = MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 5,
+        row: result_line as u16,
+        modifiers: KeyModifiers::NONE,
+    };
+    e.on_mouse(click);
+    assert_eq!(e.buf().cursor.line, result_line);
+    assert_eq!(e.buf().kind, BufKind::Grep);
+
+    e.on_mouse(click);
+    assert_eq!(e.buf().path.as_deref(), Some(dir.join("a.txt").as_path()));
+    assert_eq!(e.buf().cursor.line, 1);
+    std::fs::remove_dir_all(dir).ok();
 }
 
 #[test]

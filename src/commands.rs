@@ -783,6 +783,7 @@ impl Editor {
         t.push_str("  SPC b m / SPC b b   bookmark current file / open bookmark\n");
         t.push_str("  SPC SPC             grep in project\n");
         t.push_str("  SPC e               file explorer (Dired)\n");
+        t.push_str("  SPC z               toggle left project-tree sidebar (RET expands; files open in new windows)\n");
         t.push_str("  SPC t               terminal (reserved)\n");
         t.push_str("  SPC s               search forward in buffer\n");
         t.push_str("  SPC x               select directory\n");
@@ -825,7 +826,7 @@ impl Editor {
             }
         }
 
-        t.push_str("\nDired buffer (C-x d or SPC e):\n");
+        t.push_str("\nDired buffer (C-x d or SPC e; file operations also work in SPC z tree):\n");
         t.push_str("  Navigation: j/k/down/up next/previous line; h/left parent; l/RET/right open\n");
         t.push_str("  gg / G              top / bottom of listing\n");
         t.push_str("  C-f / C-d           page down; C-b / C-u page up\n");

@@ -550,6 +550,34 @@ fn render_window(
     }
 }
 
+fn render_project_tree(
+    buffer: &mut ratatui::buffer::Buffer,
+    editor: &Editor,
+    rect: Rect,
+) {
+    let Some(tree) = &editor.project_tree else { return };
+    let title: String = tree.root.to_string_lossy().chars().take(rect.width as usize).collect();
+    buffer.set_string(0, 0, title, bold().fg(c(TYPE)));
+
+    let visible_height = rect.height.saturating_sub(1) as usize;
+    for (offset, entry) in tree.entries.iter().skip(tree.top).take(visible_height).enumerate() {
+        let marker = if entry.is_dir {
+            if entry.expanded { "v " } else { "> " }
+        } else {
+            "  "
+        };
+        let suffix = if entry.is_dir { "/" } else { "" };
+        let line = format!("{}{}{}{}", "  ".repeat(entry.depth), marker, entry.name, suffix);
+        let style = if entry.is_dir {
+            fg(c(FUNC)).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        let line: String = line.chars().take(rect.width as usize).collect();
+        buffer.set_string(0, (offset + 1) as u16, line, style);
+    }
+}
+
 pub fn render(frame: &mut Frame, editor: &mut Editor) {
     let area = frame.area();
     let (width, height) = (area.width as usize, area.height as usize);
@@ -567,7 +595,14 @@ pub fn render(frame: &mut Frame, editor: &mut Editor) {
         _ => None,
     };
 
-    let window_area = Rect::new(0, 0, width as u16, (height - 1) as u16);
+    let tree_width = editor.project_tree_width();
+    let window_x = if tree_width > 0 { tree_width + 1 } else { 0 };
+    let window_area = Rect::new(
+        window_x,
+        0,
+        (width as u16).saturating_sub(window_x),
+        (height - 1) as u16,
+    );
     let mut window_rects = Vec::new();
     let mut separators = Vec::new();
 
@@ -602,6 +637,17 @@ pub fn render(frame: &mut Frame, editor: &mut Editor) {
 
     let frame_buffer = frame.buffer_mut();
     let mut cursor: Option<(u16, u16)> = None;
+
+    if tree_width > 0 {
+        render_project_tree(
+            frame_buffer,
+            editor,
+            Rect::new(0, 0, tree_width, (height - 1) as u16),
+        );
+        for row in 0..height.saturating_sub(1) as u16 {
+            frame_buffer.set_string(tree_width, row, "│", fg(c(DIM)));
+        }
+    }
 
     // Draw vertical separators.
     for &(separator_x, separator_y, separator_height) in &separators {
@@ -639,6 +685,15 @@ pub fn render(frame: &mut Frame, editor: &mut Editor) {
                 highlight_range,
                 &mut cursor,
             );
+        }
+    }
+
+    if tree_width > 0 && editor.project_tree_focused {
+        if let Some(tree) = &editor.project_tree {
+            let y = tree.cursor.saturating_sub(tree.top) + 1;
+            if y < height.saturating_sub(1) {
+                cursor = Some((1.min(tree_width.saturating_sub(1)), y as u16));
+            }
         }
     }
 
@@ -824,6 +879,31 @@ mod tests {
 
         assert_eq!(frame[(4, 0)].style().bg, Some(c(WARN)));
         assert_ne!(frame[(3, 0)].style().bg, Some(c(WARN)));
+    }
+
+    #[test]
+    fn project_tree_does_not_highlight_the_selected_row() {
+        let mut editor = Editor::new();
+        editor.project_tree = Some(crate::editor::ProjectTree {
+            root: ".".into(),
+            entries: vec![crate::editor::ProjectTreeEntry {
+                path: "file.rs".into(),
+                name: "file.rs".into(),
+                depth: 0,
+                is_dir: false,
+                expanded: false,
+            }],
+            cursor: 0,
+            top: 0,
+            pending: String::new(),
+        });
+        editor.project_tree_focused = true;
+
+        let rect = Rect::new(0, 0, 20, 3);
+        let mut frame = ratatui::buffer::Buffer::empty(rect);
+        render_project_tree(&mut frame, &editor, rect);
+
+        assert_ne!(frame[(0, 1)].style().bg, Some(c(SEL)));
     }
 
     #[test]

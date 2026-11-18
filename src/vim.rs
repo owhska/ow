@@ -1025,7 +1025,14 @@ impl Editor {
                 // <leader>wh, <leader>wl, <leader>wj, <leader>wk: window navigation
                 "SPC w h" | "SPC w l" | "SPC w j" | "SPC w k" => {
                     self.vim_pending.clear();
-                    self.other_window();
+                    if self.project_tree_open
+                        && ((chord == "SPC w h" && !self.project_tree_focused)
+                            || (chord == "SPC w l" && self.project_tree_focused))
+                    {
+                        self.project_tree_focused = chord == "SPC w h";
+                    } else {
+                        self.other_window();
+                    }
                     return true;
                 }
 
@@ -1078,6 +1085,11 @@ impl Editor {
                 "SPC x" => {
                     self.vim_pending.clear();
                     self.vim_select_directory();
+                    return true;
+                }
+                "SPC z" => {
+                    self.vim_pending.clear();
+                    self.project_tree_cmd();
                     return true;
                 }
                 "SPC X" => {
@@ -2240,6 +2252,21 @@ impl Editor {
             PKind::WorkspaceDirectory,
             "Select home directory: ",
         );
+    }
+
+    fn project_tree_cmd(&mut self) {
+        if self.project_tree_open {
+            self.project_tree_open = false;
+            self.project_tree_focused = false;
+            return;
+        }
+
+        let root = self
+            .proj_root
+            .clone()
+            .or_else(|| self.repo_here().and_then(|repo| crate::git::workdir(&repo)))
+            .unwrap_or_else(|| self.cwd.clone());
+        self.open_project_tree(&root);
     }
 
     fn select_directory_from(&mut self, root: &std::path::Path, kind: PKind, label: &str) {
