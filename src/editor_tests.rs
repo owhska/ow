@@ -82,11 +82,13 @@ fn selecting_home_directory_updates_spc_x_search_root() {
     let selected = tmpdir("home-root-selected");
     let initial_child = initial.join("initial-child");
     let selected_child = selected.join("selected-child");
+    let nested_child = selected_child.join("nested-child");
     let hidden_child = selected.join(".hidden");
     let config_dir = selected.join(".config");
     let config_hidden_child = config_dir.join(".hidden-config");
     std::fs::create_dir(&initial_child).unwrap();
     std::fs::create_dir(&selected_child).unwrap();
+    std::fs::create_dir(&nested_child).unwrap();
     std::fs::create_dir(&hidden_child).unwrap();
     std::fs::create_dir(&config_dir).unwrap();
     std::fs::create_dir(&config_hidden_child).unwrap();
@@ -94,7 +96,7 @@ fn selecting_home_directory_updates_spc_x_search_root() {
     let mut e = editor_in(&initial);
     e.start_prompt(Prompt::new(
         "Select home directory: ",
-        PKind::HomeDirectory,
+        PKind::WorkspaceDirectory,
         Some(vec![selected.display().to_string()]),
     ));
     keys(&mut e, "RET");
@@ -105,15 +107,37 @@ fn selecting_home_directory_updates_spc_x_search_root() {
 
     e.vim_mode = VimMode::Normal;
     keys(&mut e, "SPC x");
+    let target_index = {
+        let Mode::Prompt(prompt) = &e.mode else {
+            panic!("SPC x should open the directory picker");
+        };
+        let choices = prompt.choices.as_ref().unwrap();
+        assert!(choices.contains(&selected_child.display().to_string()));
+        assert!(choices.contains(&config_dir.display().to_string()));
+        assert!(!choices.contains(&initial_child.display().to_string()));
+        assert!(!choices.contains(&hidden_child.display().to_string()));
+        assert!(!choices.contains(&config_hidden_child.display().to_string()));
+        prompt
+            .matches
+            .iter()
+            .position(|choice| choice == &selected_child.display().to_string())
+            .unwrap()
+    };
+    for _ in 0..target_index {
+        keys(&mut e, "TAB");
+    }
+    keys(&mut e, "RET");
+    assert_eq!(e.cwd, selected);
+    assert!(matches!(e.buf().kind, BufKind::Dired));
+
+    keys(&mut e, "SPC x");
     let Mode::Prompt(prompt) = &e.mode else {
-        panic!("SPC x should open the directory picker");
+        panic!("SPC x should continue using the selected workspace root");
     };
     let choices = prompt.choices.as_ref().unwrap();
-    assert!(choices.contains(&selected_child.display().to_string()));
     assert!(choices.contains(&config_dir.display().to_string()));
+    assert!(choices.contains(&nested_child.display().to_string()));
     assert!(!choices.contains(&initial_child.display().to_string()));
-    assert!(!choices.contains(&hidden_child.display().to_string()));
-    assert!(!choices.contains(&config_hidden_child.display().to_string()));
 
     std::fs::remove_dir_all(initial).ok();
     std::fs::remove_dir_all(selected).ok();

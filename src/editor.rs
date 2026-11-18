@@ -30,7 +30,7 @@ pub enum PKind {
     SetLang,
     DiredCreate(PathBuf),
     DiredRename { dir: PathBuf, source: PathBuf },
-    HomeDirectory,
+    WorkspaceDirectory,
 }
 
 pub struct Prompt {
@@ -1814,16 +1814,16 @@ impl Editor {
                     }
                 }
             }
-            PKind::HomeDirectory => {
+            PKind::WorkspaceDirectory => {
                 let path = self.norm_path(value.trim());
                 match std::fs::canonicalize(&path) {
                     Ok(path) if path.is_dir() => {
-                        self.cwd = path.clone();
-                        self.proj_root = None;
                         self.open_dir(&path);
                         if self.buf().kind == BufKind::Dired
                             && self.buf().path.as_deref() == Some(path.as_path())
                         {
+                            self.cwd = path.clone();
+                            self.proj_root = None;
                             self.say(format!("Base directory: {}", path.display()));
                         }
                     }

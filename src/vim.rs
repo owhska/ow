@@ -2235,7 +2235,11 @@ impl Editor {
             self.say("Home directory is not available");
             return;
         };
-        self.select_directory_from(&home, PKind::HomeDirectory, "Select home directory: ");
+        self.select_directory_from(
+            &home,
+            PKind::WorkspaceDirectory,
+            "Select home directory: ",
+        );
     }
 
     fn select_directory_from(&mut self, root: &std::path::Path, kind: PKind, label: &str) {
