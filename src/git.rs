@@ -478,6 +478,13 @@ fn remote_for_head(repo: &Repository) -> Res<(String, String)> {
     Ok((remote, branch))
 }
 
+fn needs_system_git(error: &git2::Error) -> bool {
+    let message = error.message().to_ascii_lowercase();
+    message.contains("unable to exchange encryption keys")
+        || message.contains("there is no tls stream available")
+        || message.contains("unsupported url protocol")
+}
+
 pub fn push(repo: &Repository) -> Res<String> {
     let (remote_name, branch) = remote_for_head(repo)?;
     let mut remote = repo.find_remote(&remote_name)?;
@@ -486,7 +493,7 @@ pub fn push(repo: &Repository) -> Res<String> {
     let spec = format!("refs/heads/{branch}:refs/heads/{branch}");
     match remote.push(&[spec], Some(&mut po)) {
         Ok(()) => Ok(format!("Pushed {branch} to {remote_name}")),
-        Err(error) if error.message().contains("Unable to exchange encryption keys") => {
+        Err(error) if needs_system_git(&error) => {
             push_with_git(repo, &remote_name, &branch)
         }
         Err(error) => Err(error),
@@ -494,31 +501,40 @@ pub fn push(repo: &Repository) -> Res<String> {
 }
 
 fn push_with_git(repo: &Repository, remote: &str, branch: &str) -> Res<String> {
-    let root = repo.workdir().unwrap_or_else(|| repo.path());
     let spec = format!("refs/heads/{branch}:refs/heads/{branch}");
+    run_system_git(repo, &["push", remote, &spec])?;
+    Ok(format!("Pushed {branch} to {remote} using system git"))
+}
+
+fn fetch_with_git(repo: &Repository, remote: &str, branch: &str) -> Res<()> {
+    run_system_git(repo, &["fetch", remote, branch])
+}
+
+fn run_system_git(repo: &Repository, args: &[&str]) -> Res<()> {
+    let root = repo.workdir().unwrap_or_else(|| repo.path());
     let output = Command::new("git")
         .arg("-C")
         .arg(root)
-        .arg("push")
-        .arg(remote)
-        .arg(&spec)
+        .args(args)
         .output()
         .map_err(|error| {
-            git2::Error::from_str(&format!(
-                "SSH key exchange failed in libgit2, and system git could not be started: {error}"
-            ))
+            git2::Error::from_str(&format!("could not start system git: {error}"))
         })?;
 
     if output.status.success() {
-        return Ok(format!("Pushed {branch} to {remote} using system git"));
+        return Ok(());
     }
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let message = stderr.trim();
-    Err(git2::Error::from_str(if message.is_empty() {
-        "system git push failed"
+    let message = if stderr.trim().is_empty() {
+        String::from_utf8_lossy(&output.stdout)
     } else {
-        message
+        stderr
+    };
+    Err(git2::Error::from_str(if message.trim().is_empty() {
+        "system git command failed"
+    } else {
+        message.trim()
     }))
 }
 
@@ -527,7 +543,13 @@ pub fn pull(repo: &Repository) -> Res<String> {
     let mut remote = repo.find_remote(&remote_name)?;
     let mut fo = FetchOptions::new();
     fo.remote_callbacks(callbacks());
-    remote.fetch(&[&branch], Some(&mut fo), None)?;
+    if let Err(error) = remote.fetch(&[&branch], Some(&mut fo), None) {
+        if needs_system_git(&error) {
+            fetch_with_git(repo, &remote_name, &branch)?;
+        } else {
+            return Err(error);
+        }
+    }
     let fh = repo.find_reference("FETCH_HEAD")?;
     let fc = repo.reference_to_annotated_commit(&fh)?;
     let (an, _) = repo.merge_analysis(&[&fc])?;
@@ -687,10 +709,12 @@ mod tests {
         repo.remote("origin", remote_dir.to_str().unwrap()).unwrap();
 
         push_with_git(&repo, "origin", &branch).unwrap();
+        fetch_with_git(&repo, "origin", &branch).unwrap();
 
         assert!(remote_repo
             .find_reference(&format!("refs/heads/{branch}"))
             .is_ok());
+        assert!(repo.find_reference("FETCH_HEAD").is_ok());
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(remote_dir).ok();
     }
