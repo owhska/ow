@@ -755,7 +755,7 @@ impl Editor {
         t.push_str("  C-n                 edit all whole-word occurrences under cursor (multi-cursor)\n");
         t.push_str("  u / C-r             undo / redo\n");
         t.push_str("  C-a                 select whole buffer (VisualLine)\n");
-        t.push_str("  C-e                 reserved for Emacs bindings\n");
+        t.push_str("  C-e                 switch to buffer (same as C-x b)\n");
         t.push_str("  q / @               no Vim macro recording/playback (intentionally unbound)\n");
         t.push_str("  Shift-Left/Right    previous / next buffer\n");
         t.push_str("  H / L               first nonblank / end of line\n\n");
@@ -786,6 +786,7 @@ impl Editor {
         t.push_str("  SPC t               terminal (reserved)\n");
         t.push_str("  SPC s               search forward in buffer\n");
         t.push_str("  SPC x               select directory\n");
+        t.push_str("  SPC X               select directory from home and set workspace root\n");
         t.push_str("  SPC q               close current buffer\n");
         t.push_str("  SPC l w             toggle line wrap\n");
         t.push_str("  SPC TAB / SPC S-TAB next / previous buffer\n");
@@ -1020,7 +1021,7 @@ pub static BINDINGS: &[(&str, &str)] = &[
     ("C-n", "next-line"),
     ("C-p", "previous-line"),
     ("C-a", "beginning-of-line"),
-    ("C-e", "end-of-line"),
+    ("C-e", "switch-to-buffer"),
     ("M-f", "forward-word"),
     ("M-b", "backward-word"),
     ("M-<", "beginning-of-buffer"),
@@ -1085,6 +1086,7 @@ pub static BINDINGS: &[(&str, &str)] = &[
     ("C-x <left>", "previous-buffer"),
     ("C-x d", "dired"),
     ("C-x C-c", "save-buffers-kill-terminal"),
+    ("M-q", "save-buffers-kill-terminal"),
     ("M-x", "execute-extended-command"),
     ("C-h b", "describe-bindings"),
     ("C-x g", "git-status"),

@@ -10,6 +10,12 @@ impl Editor {
             if n == "C-x" {
                 return false;
             }
+            if n == "C-h" {
+                return false;
+            }
+            if n == "C-e" {
+                return false;
+            }
             if n.starts_with("M-") || n.starts_with("C-M-") {
                 return false;
             }
@@ -664,7 +670,10 @@ impl Editor {
                     } else {
                         self.buf().find_backward(cur, &self.last_search, true)
                     };
-                    if let Some((a, _)) = found { self.buf_mut().cursor = a; }
+                    if let Some((a, e)) = found {
+                        self.buf_mut().cursor = a;
+                        self.search_highlight = Some((self.cur, a, e));
+                    }
                 }
                 return true;
             }
@@ -683,7 +692,10 @@ impl Editor {
                     } else {
                         self.buf().find_backward(cur, &word, true)
                     };
-                    if let Some((a, _)) = found { self.buf_mut().cursor = a; }
+                    if let Some((a, e)) = found {
+                        self.buf_mut().cursor = a;
+                        self.search_highlight = Some((self.cur, a, e));
+                    }
                 }
                 return true;
             }
@@ -1066,6 +1078,11 @@ impl Editor {
                 "SPC x" => {
                     self.vim_pending.clear();
                     self.vim_select_directory();
+                    return true;
+                }
+                "SPC X" => {
+                    self.vim_pending.clear();
+                    self.vim_select_home_directory();
                     return true;
                 }
 
@@ -2209,6 +2226,19 @@ impl Editor {
     }
 
     pub fn vim_select_directory(&mut self) {
+        let root = self.cwd.clone();
+        self.select_directory_from(&root, PKind::Switch, "Select directory: ");
+    }
+
+    pub fn vim_select_home_directory(&mut self) {
+        let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+            self.say("Home directory is not available");
+            return;
+        };
+        self.select_directory_from(&home, PKind::HomeDirectory, "Select home directory: ");
+    }
+
+    fn select_directory_from(&mut self, root: &std::path::Path, kind: PKind, label: &str) {
         let mut entries = Vec::new();
 
         let ignored = [
@@ -2227,36 +2257,52 @@ impl Editor {
             "vendor",
             "staticfiles",
             "coverage",
+            ".local",
+            ".ssh",
+            ".gnupg",
+            ".mozilla",
+            ".var",
+            ".docker",
+            ".vscode-server",
+            ".thunderbird",
+            ".tox",
         ];
 
-        let mut cmd = format!("find {} -mindepth 1 -maxdepth 6 ", self.cwd.display());
-
+        let mut command = std::process::Command::new("find");
+        command.arg(root).args(["-mindepth", "1", "-maxdepth", "6"]);
         if !ignored.is_empty() {
-            let expr = ignored
-                .iter()
-                .map(|name| format!("-name '{name}'"))
-                .collect::<Vec<_>>()
-                .join(" -o ");
-
-            cmd.push_str(&format!("\\( {expr} \\) -prune -o -type d -print"));
+            command.arg("(");
+            for (index, name) in ignored.iter().enumerate() {
+                if index > 0 {
+                    command.arg("-o");
+                }
+                command.arg("-name").arg(name);
+            }
+            command.args([
+                "-o", "(", "-name", ".*", "!", "-name", ".config", ")", ")", "-prune", "-o",
+                "-type", "d", "-print",
+            ]);
         } else {
-            cmd.push_str("-type d -print");
+            command.args(["-type", "d", "-print"]);
         }
 
-        let output = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(&format!("{cmd} 2>/dev/null"))
-            .output();
+        let output = match command.output() {
+            Ok(output) => output,
+            Err(error) => {
+                self.say(format!("Cannot search directories: {error}"));
+                return;
+            }
+        };
+        if !output.status.success() && output.stdout.is_empty() {
+            let error = String::from_utf8_lossy(&output.stderr);
+            self.say(format!("Cannot search directories: {}", error.trim()));
+            return;
+        }
 
-        if let Ok(out) = output {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-
-            for line in stdout.lines() {
-                let line = line.trim();
-
-                if !line.is_empty() && line != "." {
-                    entries.push(line.to_string());
-                }
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let line = line.trim();
+            if !line.is_empty() && line != "." {
+                entries.push(line.to_string());
             }
         }
 
@@ -2267,10 +2313,6 @@ impl Editor {
             return;
         }
 
-        self.start_prompt(Prompt::new(
-            "Select directory: ",
-            PKind::Switch,
-            Some(entries),
-        ));
+        self.start_prompt(Prompt::new(label, kind, Some(entries)));
     }
 }

@@ -31,7 +31,8 @@ Emacs-style functionality for operations outside Vim's navigation and modal edit
 - Incremental search: `C-s`, `C-r` (smart-case).
 - Query-replace: `M-%` (`y` / `n` / `!` / `.` / `q`).
 - Numeric arguments: `C-u`, `M-3`.
-- Files and buffers: `C-x C-f`, `C-x C-s`, `C-x C-w`, `C-x s`, `C-x b`, `C-x k`, `C-x C-b`, `C-x d`.
+- Files and buffers: `C-x C-f`, `C-x C-s`, `C-x C-w`, `C-x s`, `C-x b` / `C-e`, `C-x k`, `C-x C-b`, `C-x d`.
+- Quit: `C-x C-c` or `M-q` (prompts if file buffers have unsaved changes).
 - `M-x` with fuzzy command completion.
 - Windows: `C-x 2` split below, `C-x 3` split right, `C-x 1` delete other windows, `C-x 0` close current window, `C-x o` switch window.
 - Auto-indent, `M-;` comment toggle, `TAB` / `S-TAB` indent/unindent.
@@ -68,7 +69,7 @@ Emacs-style functionality for operations outside Vim's navigation and modal edit
 - `VISUAL LINE`
 - `VISUAL BLOCK`
 
-The current mode is displayed in the status line. Vim motions and operators are handled by the modal layer; existing Emacs `C-x` command sequences are preserved. `C-e` is not assigned to a Vim command.
+The current mode is displayed in the status line. Vim motions and operators are handled by the modal layer; existing Emacs `C-x` command sequences are preserved. `C-e` opens the buffer switcher, like `C-x b`.
 
 ### Normal mode
 
@@ -135,7 +136,7 @@ Normal-mode macro recording (`q{register}` / `@{register}`) is intentionally not
 | `SPC S-TAB` | Previous buffer |
 | `SPC t` | Reserved |
 | `SPC w w` | Save buffer |
-| `SPC w q` | Save and close / quit |
+| `SPC w q` | Close focused window; quit if it is the last window |
 | `SPC q` | Close buffer |
 | `SPC s` | Search current buffer |
 | `SPC w v` | Vertical split |
@@ -144,13 +145,14 @@ Normal-mode macro recording (`q{register}` / `@{register}`) is intentionally not
 | `SPC r r` | Query-replace word under cursor |
 | `SPC ←/→/↑/↓` | Resize window split |
 | `SPC x` | Select directory |
+| `SPC X` | Select directory from home and set it as workspace root |
 
 Additional existing shortcuts:
 
 | Key | Action |
 |---|---|
 | `C-p` | Find file in project |
-| `C-e` | Reserved for the Emacs command layer |
+| `C-e` | Switch to buffer (same as `C-x b`) |
 | `S-Right` / `S-Left` | Next / previous buffer |
 
 ## Git

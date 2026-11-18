@@ -24,7 +24,7 @@ const HELP: &str = "ow - Micro GNU Emacs in Rust, with built-in git and syntax h
 Usage: ow [+LINE] [FILE...]
        ow --list-languages | --version | --help
 
-Keys (Emacs): C-x C-f find-file, C-x C-s save, C-x C-c quit, C-s/C-r search,
+Keys (Emacs): C-x C-f find-file, C-x C-s save, C-x C-c / M-q quit, C-s/C-r search,
 M-% query-replace, M-x commands, C-h b all bindings.
 Git:     C-x g status, C-x v = diff, C-x v l log, C-x v g blame, C-x v a stage,
          C-x v c commit, C-x v o checkout, C-x v n/p hunks, C-x v F/P pull/push.
@@ -55,8 +55,13 @@ fn osc52(text: &str) {
 }
 
 fn run(term: &mut DefaultTerminal, ed: &mut Editor) -> io::Result<()> {
+    let mut redraw = true;
+
     loop {
-        term.draw(|f| ui::render(f, ed))?;
+        if redraw {
+            term.draw(|f| ui::render(f, ed))?;
+            redraw = false;
+        }
         if ed.quit {
             return Ok(());
         }
@@ -64,21 +69,30 @@ fn run(term: &mut DefaultTerminal, ed: &mut Editor) -> io::Result<()> {
             osc52(&c);
             clipboard::set_clipboard(&c);
         }
-        if event::poll(Duration::from_millis(250))? {
+        if event::poll(Duration::from_millis(16))? {
             loop {
                 match event::read()? {
-                    Event::Key(k) => ed.on_key(k),
-                    Event::Paste(s) => ed.on_paste(&s),
-                    Event::Mouse(m) => ed.on_mouse(m),
+                    Event::Key(k) => {
+                        ed.on_key(k);
+                        redraw = true;
+                    }
+                    Event::Paste(s) => {
+                        ed.on_paste(&s);
+                        redraw = true;
+                    }
+                    Event::Mouse(m) => {
+                        ed.on_mouse(m);
+                        redraw = true;
+                    }
+                    Event::Resize(_, _) => redraw = true,
                     _ => {}
                 }
                 if ed.quit || !event::poll(Duration::ZERO)? {
                     break;
                 }
             }
-        } else {
-            ed.tick();
         }
+        redraw |= ed.tick();
     }
 }
 

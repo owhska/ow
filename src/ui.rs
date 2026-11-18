@@ -63,14 +63,16 @@ fn special_styles(
             paint(32, 46, fg(c(INFO)));
         }
         BufKind::Grep => match meta {
-            Some(LineMeta::Grep { path, line: line_number }) => {
+            Some(LineMeta::Grep { path, line: line_number, match_start, match_end }) => {
                 let path_length = path.chars().count();
 
                 paint(0, path_length, fg(c(TYPE)));
+                let snippet_start = path_length + 1 + line_number.to_string().len() + 2;
+                paint(path_length, snippet_start, fg(c(INFO)));
                 paint(
-                    path_length,
-                    path_length + 1 + line_number.to_string().len() + 1,
-                    fg(c(INFO)),
+                    snippet_start + match_start,
+                    snippet_start + match_end,
+                    Style::default().bg(c(WARN)).fg(Color::Black),
                 );
             }
             _ => paint(0, length, bold()),
@@ -176,6 +178,7 @@ fn render_window(
     } else {
         None
     };
+    let search_highlight = editor.search_highlight;
 
     let buffer = &mut editor.bufs[window.buf_idx];
     let git_gutter_width = if buffer.kind == BufKind::File && buffer.git_tracked {
@@ -222,7 +225,6 @@ fn render_window(
     } else {
         None
     };
-
     let line_count = buffer.lines.len();
     let (tab_width, kind) = (buffer.tab_width, buffer.kind);
 
@@ -306,6 +308,15 @@ fn render_window(
                     overlays.push((
                         start_column,
                         end_column,
+                        Style::default().bg(c(WARN)).fg(Color::Black),
+                    ));
+                }
+            }
+            if let Some((buffer_index, start, end)) = search_highlight {
+                if buffer_index == window.buf_idx && line_index == start.line {
+                    overlays.push((
+                        start.col,
+                        end.col,
                         Style::default().bg(c(WARN)).fg(Color::Black),
                     ));
                 }
@@ -790,5 +801,44 @@ mod tests {
         );
 
         assert_eq!(cursor_position, Some((2, 1)));
+    }
+
+    #[test]
+    fn persistent_search_match_is_highlighted() {
+        let mut editor = Editor::new();
+        editor.buf_mut().set_text("one target");
+        editor.search_highlight = Some((0, Pos::new(0, 4), Pos::new(0, 10)));
+
+        let rect = Rect::new(0, 0, 12, 2);
+        let mut frame = ratatui::buffer::Buffer::empty(rect);
+        let mut cursor_position = None;
+        render_window(
+            &mut frame,
+            &mut editor,
+            &Window::new(0, 0),
+            rect,
+            true,
+            None,
+            &mut cursor_position,
+        );
+
+        assert_eq!(frame[(4, 0)].style().bg, Some(c(WARN)));
+        assert_ne!(frame[(3, 0)].style().bg, Some(c(WARN)));
+    }
+
+    #[test]
+    fn grep_match_is_highlighted_in_results_list() {
+        let line = "src/a.rs:12: one needle here";
+        let meta = LineMeta::Grep {
+            path: "src/a.rs".into(),
+            line: 12,
+            match_start: 4,
+            match_end: 10,
+        };
+        let styles = special_styles(BufKind::Grep, line, Some(&meta)).unwrap();
+        let snippet_start = "src/a.rs:12: ".chars().count();
+
+        assert_eq!(styles[snippet_start + 4].bg, Some(c(WARN)));
+        assert_ne!(styles[snippet_start + 3].bg, Some(c(WARN)));
     }
 }

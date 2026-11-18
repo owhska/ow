@@ -602,6 +602,56 @@ impl Editor {
         self.start_prompt(Prompt::new("Project grep (regex): ", PKind::ProjGrep, None).with_input(&pre));
     }
 
+    fn grep_chunk(
+        root: &Path,
+        files: &[String],
+        re: &regex::Regex,
+    ) -> Vec<(String, Vec<(usize, String, usize, usize)>)> {
+        use std::io::Read;
+
+        let mut results = Vec::new();
+        let mut match_count = 0;
+        'files: for file in files {
+            let path = root.join(file);
+            let Ok(mut handle) = std::fs::File::open(&path) else { continue };
+            let Ok(metadata) = handle.metadata() else { continue };
+            if metadata.len() > 2_000_000 {
+                continue;
+            }
+            let mut bytes = Vec::with_capacity(metadata.len() as usize);
+            if handle.read_to_end(&mut bytes).is_err() || bytes.iter().take(8000).any(|&byte| byte == 0) {
+                continue;
+            }
+            let text = String::from_utf8_lossy(&bytes);
+            let mut hits = Vec::new();
+            for (line, content) in text.lines().enumerate() {
+                if let Some(found) = re.find(content) {
+                    let trimmed = content.trim();
+                    let leading_bytes = content.len() - content.trim_start().len();
+                    let leading_chars = content[..leading_bytes].chars().count();
+                    let chars: Vec<char> = trimmed.chars().collect();
+                    let start = content[..found.start()].chars().count().saturating_sub(leading_chars).min(chars.len());
+                    let end = content[..found.end()].chars().count().saturating_sub(leading_chars).min(chars.len());
+                    let snippet_start = if start >= 160 { start.saturating_sub(80) } else { 0 };
+                    let snippet_end = (snippet_start + 160).min(chars.len());
+                    let shown: String = chars[snippet_start..snippet_end].iter().collect();
+                    let match_start = start.saturating_sub(snippet_start);
+                    let match_end = end.saturating_sub(snippet_start);
+                    hits.push((line + 1, shown, match_start, match_end));
+                    match_count += 1;
+                    if match_count >= 3000 {
+                        results.push((file.clone(), hits));
+                        break 'files;
+                    }
+                }
+            }
+            if !hits.is_empty() {
+                results.push((file.clone(), hits));
+            }
+        }
+        results
+    }
+
     fn project_grep_now(&mut self, pat: &str) {
         if pat.is_empty() {
             return;
@@ -614,37 +664,50 @@ impl Editor {
             self.say("Invalid pattern");
             return;
         };
+        let worker_count = std::thread::available_parallelism()
+            .map(usize::from)
+            .unwrap_or(1)
+            .min(4)
+            .min(files.len().max(1));
+        let chunk_size = files.len().div_ceil(worker_count).max(1);
+        let result_chunks = std::thread::scope(|scope| {
+            let root = &root;
+            let re = &re;
+            let workers: Vec<_> = files
+                .chunks(chunk_size)
+                .map(|chunk| scope.spawn(move || Self::grep_chunk(root, chunk, re)))
+                .collect();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().expect("project grep worker panicked"))
+                .collect::<Vec<_>>()
+        });
+
         let mut t = format!("Grep for /{pat}/ in {}\n\n", root.display());
         let mut m = vec![LineMeta::None, LineMeta::None];
         let mut count = 0;
         let mut nfiles = 0;
-        'outer: for f in &files {
-            let Ok(meta) = std::fs::metadata(root.join(f)) else { continue };
-            if meta.len() > 2_000_000 {
-                continue;
-            }
-            let Ok(bytes) = std::fs::read(root.join(f)) else { continue };
-            if bytes.iter().take(8000).any(|&b| b == 0) {
-                continue;
-            }
-            let text = String::from_utf8_lossy(&bytes);
-            let mut hit = false;
-            for (i, line) in text.lines().enumerate() {
-                if re.is_match(line) {
-                    hit = true;
-                    let shown: String = line.trim().chars().take(160).collect();
-                    t.push_str(&format!("{f}:{}: {shown}\n", i + 1));
-                    m.push(LineMeta::Grep { path: f.clone(), line: i + 1 });
+        'results: for chunk in result_chunks {
+            for (file, hits) in chunk {
+                if hits.is_empty() {
+                    continue;
+                }
+                nfiles += 1;
+                for (line, shown, match_start, match_end) in hits {
+                    t.push_str(&format!("{file}:{line}: {shown}\n"));
+                    m.push(LineMeta::Grep {
+                        path: file.clone(),
+                        line,
+                        match_start,
+                        match_end,
+                    });
                     count += 1;
                     if count >= 3000 {
                         t.push_str("... (truncated at 3000 matches)\n");
                         m.push(LineMeta::None);
-                        break 'outer;
+                        break 'results;
                     }
                 }
-            }
-            if hit {
-                nfiles += 1;
             }
         }
         if count == 0 {
@@ -678,7 +741,7 @@ impl Editor {
             return;
         };
         self.grep_fresh = false;
-        let Some(LineMeta::Grep { path, line }) = self.bufs[gi].meta.get(i).cloned() else { return };
+        let Some(LineMeta::Grep { path, line, .. }) = self.bufs[gi].meta.get(i).cloned() else { return };
         self.bufs[gi].cursor = Pos::new(i, 0);
         let total = self.bufs[gi].meta.iter().filter(|m| matches!(m, LineMeta::Grep { .. })).count();
         let k = self.bufs[gi].meta[..=i].iter().filter(|m| matches!(m, LineMeta::Grep { .. })).count();

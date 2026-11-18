@@ -3,6 +3,7 @@ use crate::buffer::*;
 use crate::editor::*;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 fn ev(k: &str) -> KeyEvent {
     let (mods, rest) = if let Some(r) = k.strip_prefix("C-M-") {
@@ -61,6 +62,121 @@ fn editor_in(dir: &PathBuf) -> Editor {
     e.cwd = dir.clone();
     e.vim_mode = VimMode::Insert;
     e
+}
+
+#[test]
+fn ctrl_e_opens_switch_buffer_prompt() {
+    let mut e = Editor::new();
+
+    keys(&mut e, "C-e");
+
+    assert!(matches!(
+        &e.mode,
+        Mode::Prompt(prompt) if matches!(&prompt.kind, PKind::Switch)
+    ));
+}
+
+#[test]
+fn selecting_home_directory_updates_spc_x_search_root() {
+    let initial = tmpdir("home-root-initial");
+    let selected = tmpdir("home-root-selected");
+    let initial_child = initial.join("initial-child");
+    let selected_child = selected.join("selected-child");
+    let hidden_child = selected.join(".hidden");
+    let config_dir = selected.join(".config");
+    let config_hidden_child = config_dir.join(".hidden-config");
+    std::fs::create_dir(&initial_child).unwrap();
+    std::fs::create_dir(&selected_child).unwrap();
+    std::fs::create_dir(&hidden_child).unwrap();
+    std::fs::create_dir(&config_dir).unwrap();
+    std::fs::create_dir(&config_hidden_child).unwrap();
+
+    let mut e = editor_in(&initial);
+    e.start_prompt(Prompt::new(
+        "Select home directory: ",
+        PKind::HomeDirectory,
+        Some(vec![selected.display().to_string()]),
+    ));
+    keys(&mut e, "RET");
+
+    assert_eq!(e.cwd, selected);
+    assert!(matches!(e.buf().kind, BufKind::Dired));
+    assert_eq!(e.proj_root, None);
+
+    e.vim_mode = VimMode::Normal;
+    keys(&mut e, "SPC x");
+    let Mode::Prompt(prompt) = &e.mode else {
+        panic!("SPC x should open the directory picker");
+    };
+    let choices = prompt.choices.as_ref().unwrap();
+    assert!(choices.contains(&selected_child.display().to_string()));
+    assert!(choices.contains(&config_dir.display().to_string()));
+    assert!(!choices.contains(&initial_child.display().to_string()));
+    assert!(!choices.contains(&hidden_child.display().to_string()));
+    assert!(!choices.contains(&config_hidden_child.display().to_string()));
+
+    std::fs::remove_dir_all(initial).ok();
+    std::fs::remove_dir_all(selected).ok();
+}
+
+#[test]
+fn leader_search_keeps_match_highlight_while_navigating() {
+    let mut e = Editor::new();
+    e.buf_mut().set_text("word one word two");
+
+    keys(&mut e, "SPC s w o r d RET");
+    assert_eq!(
+        e.search_highlight,
+        Some((0, Pos::new(0, 0), Pos::new(0, 4)))
+    );
+
+    keys(&mut e, "n");
+    assert_eq!(
+        e.search_highlight,
+        Some((0, Pos::new(0, 9), Pos::new(0, 13)))
+    );
+}
+
+#[test]
+fn meta_q_quits_like_c_x_c_c_and_prompts_for_modified_files() {
+    let mut plain = Editor::new();
+    keys(&mut plain, "C-x C-c");
+    assert!(plain.quit);
+
+    let dir = tmpdir("meta-q");
+    let path = dir.join("modified.txt");
+    std::fs::write(&path, "text\n").unwrap();
+    let mut e = Editor::new();
+    let index = e.open_path(&path).unwrap();
+    e.switch_to(index);
+    e.buf_mut().modified = true;
+
+    keys(&mut e, "M-q");
+    assert!(matches!(e.mode, Mode::YesNo(_)));
+    assert!(!e.quit);
+    keys(&mut e, "y");
+    assert!(e.quit);
+
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn reloads_open_buffer_after_external_file_change() {
+    let dir = tmpdir("external-change");
+    let path = dir.join("external.txt");
+    std::fs::write(&path, "before\n").unwrap();
+
+    let mut e = editor_in(&dir);
+    let index = e.open_path(&path).unwrap();
+    e.switch_to(index);
+    std::fs::write(&path, "updated externally\n").unwrap();
+    e.disk_stamp = Instant::now() - Duration::from_secs(1);
+
+    assert!(e.tick());
+    assert_eq!(e.buf().text(), "updated externally\n");
+    assert!(!e.buf().modified);
+
+    std::fs::remove_dir_all(dir).ok();
 }
 
 #[test]
@@ -182,7 +298,7 @@ fn git_workflow_through_the_editor() {
 
     // edit through the editor: gutter marks + diff + hunk navigation
     e.find_file("a.txt");
-    keys(&mut e, "C-n C-e RET three");
+    keys(&mut e, "C-n M-f RET three");
     e.refresh_marks();
     assert_eq!(e.buf().git_marks, vec![0, 0, 1]);
     keys(&mut e, "M-< C-x v n");
@@ -206,6 +322,10 @@ fn git_workflow_through_the_editor() {
     keys(&mut e, "C-x p g t w o RET");
     assert_eq!(e.buf().kind, BufKind::Grep);
     assert!(e.buf().lines.iter().any(|l| l.starts_with("a.txt:2:")), "{:?}", e.buf().lines);
+    assert!(matches!(
+        e.buf().meta.get(2),
+        Some(LineMeta::Grep { match_start: 0, match_end: 3, .. })
+    ));
     keys(&mut e, "M-g n");
     assert_eq!(e.buf().name, "a.txt");
     assert_eq!(e.buf().cursor.line, 1);
@@ -595,8 +715,16 @@ fn dired_allows_vim_leader_and_meta_commands() {
     keys(&mut e, "M-x");
     assert!(matches!(e.mode, Mode::Prompt(_)));
     e.mode = Mode::Normal;
+    keys(&mut e, "C-e");
+    assert!(matches!(
+        &e.mode,
+        Mode::Prompt(prompt) if matches!(&prompt.kind, PKind::Switch)
+    ));
+    e.mode = Mode::Normal;
     keys(&mut e, "C-x 2");
     assert_eq!(e.windows.len(), 2);
+    keys(&mut e, "C-h b");
+    assert_eq!(e.buf().kind, BufKind::Help);
 
     std::fs::remove_dir_all(dir).ok();
 }
@@ -753,4 +881,27 @@ fn mouse_hover_does_not_change_window_focus() {
         modifiers: KeyModifiers::NONE,
     });
     assert_eq!(e.active_win_id, other_id);
+}
+
+#[test]
+fn mouse_scroll_does_not_change_focus_and_scrolls_hovered_window() {
+    use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
+
+    let mut e = Editor::new();
+    e.screen_w = 80;
+    e.screen_h = 24;
+    e.buf_mut().set_text(&(0..100).map(|line| line.to_string()).collect::<Vec<_>>().join("\n"));
+    e.split_window_right();
+    let active_id = e.active_win_id;
+    let other_id = e.windows.iter().find(|window| window.id != active_id).unwrap().id;
+
+    e.on_mouse(MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: 60,
+        row: 3,
+        modifiers: KeyModifiers::NONE,
+    });
+
+    assert_eq!(e.active_win_id, active_id);
+    assert!(e.windows.iter().find(|window| window.id == other_id).unwrap().top > 0);
 }

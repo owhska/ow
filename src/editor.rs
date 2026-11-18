@@ -7,7 +7,7 @@ use ratatui::crossterm::event::KeyEvent;
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthChar;
 
 // ------------------------------------------------------------------ modes
@@ -30,6 +30,7 @@ pub enum PKind {
     SetLang,
     DiredCreate(PathBuf),
     DiredRename { dir: PathBuf, source: PathBuf },
+    HomeDirectory,
 }
 
 pub struct Prompt {
@@ -423,6 +424,7 @@ pub struct Editor {
     pub file_clipboard_cut: bool,
     pub arg_digits: bool,
     pub grep_fresh: bool,
+    pub search_highlight: Option<(usize, Pos, Pos)>,
     pub screen_w: u16,
     pub screen_h: u16,
     pub disk_stamp: Instant,
@@ -511,6 +513,7 @@ impl Editor {
             file_clipboard_cut: false,
             arg_digits: false,
             grep_fresh: false,
+            search_highlight: None,
             screen_w: 80,
             screen_h: 24,
         }
@@ -550,6 +553,7 @@ impl Editor {
     pub fn switch_to(&mut self, idx: usize) {
         if idx != self.cur {
             self.prev_cur = Some(self.cur);
+            self.search_highlight = None;
         }
         self.cur = idx;
         if let Some(w) = self.windows.iter_mut().find(|w| w.id == self.active_win_id) {
@@ -714,6 +718,7 @@ impl Editor {
     }
 
     pub fn kill_buffer_idx(&mut self, idx: usize) {
+        self.search_highlight = None;
         if self.bufs.len() == 1 {
             self.bufs[0] = Buffer::new("*scratch*");
             self.cur = 0;
@@ -772,6 +777,9 @@ impl Editor {
             let cursor = w.cursor;
             let top = w.top;
             let left = w.left;
+            if self.cur != b_idx {
+                self.search_highlight = None;
+            }
             self.active_win_id = next_id;
             self.cur = b_idx;
             if b_idx < self.bufs.len() {
@@ -1101,7 +1109,10 @@ impl Editor {
             Ok(bytes) => {
                 let b = &mut self.bufs[idx];
                 b.set_text(&String::from_utf8_lossy(&bytes));
-                b.mtime = std::fs::metadata(&p).and_then(|m| m.modified()).ok();
+                if let Ok(metadata) = std::fs::metadata(&p) {
+                    b.mtime = metadata.modified().ok();
+                    b.file_size = Some(metadata.len());
+                }
                 b.git_marks_version = u64::MAX;
             }
             Err(_) => {} // file vanished: keep contents
@@ -1117,8 +1128,14 @@ impl Editor {
                 continue;
             }
             let Some(p) = &b.path else { continue };
-            let m = std::fs::metadata(p).and_then(|m| m.modified()).ok();
-            if m.is_some() && m != b.mtime {
+            let metadata = std::fs::metadata(p);
+            let changed = metadata
+                .as_ref()
+                .is_ok_and(|metadata| {
+                    Some(metadata.len()) != b.file_size
+                        || metadata.modified().ok() != b.mtime
+                });
+            if changed {
                 self.reload_buffer(i);
                 n += 1;
             }
@@ -1257,10 +1274,12 @@ impl Editor {
             self.refresh_git_info();
             redraw = true;
         }
-        if self.disk_stamp.elapsed().as_secs() >= 2 {
+        if self.disk_stamp.elapsed() >= Duration::from_millis(100) {
             self.disk_stamp = Instant::now();
-            if matches!(self.mode, Mode::Normal) && self.revert_unmodified() > 0 {
-                self.say("File changed on disk: buffer reverted");
+            if self.revert_unmodified() > 0 {
+                if matches!(self.mode, Mode::Normal) {
+                    self.say("File changed on disk: buffer reloaded");
+                }
                 redraw = true;
             }
         }
@@ -1377,27 +1396,36 @@ impl Editor {
 
         let Some((target_win_id, rect)) = found else { return };
 
+        if matches!(ev.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) {
+            if target_win_id == self.active_win_id {
+                for _ in 0..3 {
+                    if ev.kind == MouseEventKind::ScrollUp {
+                        self.previous_line();
+                    } else {
+                        self.next_line();
+                    }
+                }
+            } else if let Some(window) = self.windows.iter_mut().find(|window| window.id == target_win_id) {
+                let Some(buffer) = self.bufs.get(window.buf_idx) else { return };
+                let max_top = buffer.lines.len().saturating_sub((rect.height as usize).saturating_sub(1));
+                window.top = if ev.kind == MouseEventKind::ScrollUp {
+                    window.top.saturating_sub(3)
+                } else {
+                    window.top.saturating_add(3).min(max_top)
+                };
+            }
+            return;
+        }
+
         let activates_window = matches!(
             ev.kind,
             MouseEventKind::Down(MouseButton::Left)
-                | MouseEventKind::ScrollUp
-                | MouseEventKind::ScrollDown
         );
         if activates_window && target_win_id != self.active_win_id {
             self.set_active_window(target_win_id);
         }
 
         match ev.kind {
-            MouseEventKind::ScrollUp => {
-                for _ in 0..3 {
-                    self.previous_line();
-                }
-            }
-            MouseEventKind::ScrollDown => {
-                for _ in 0..3 {
-                    self.next_line();
-                }
-            }
             MouseEventKind::Down(MouseButton::Left) if self.buf().kind == BufKind::Dired => {
                 let text_h = (rect.height as usize).saturating_sub(1);
                 let click_rel_y = (ev.row as usize).saturating_sub(rect.y as usize);
@@ -1772,20 +1800,36 @@ impl Editor {
                     self.save_current(Some(p));
                 }
             }
-             PKind::Switch => {
-                 if let Some(i) = self.bufs.iter().position(|b| b.name == value) {
-                     self.switch_to(i);
-                 } else {
-                     let p = self.norm_path(&value);
-                     if p.is_dir() {
-                         self.open_dir(&p);
-                     } else if p.exists() {
-                         self.find_file(&value);
-                     } else {
-                         self.say(format!("No such path: {value}"));
-                     }
-                 }
-             }
+            PKind::Switch => {
+                if let Some(i) = self.bufs.iter().position(|b| b.name == value) {
+                    self.switch_to(i);
+                } else {
+                    let p = self.norm_path(&value);
+                    if p.is_dir() {
+                        self.open_dir(&p);
+                    } else if p.exists() {
+                        self.find_file(&value);
+                    } else {
+                        self.say(format!("No such path: {value}"));
+                    }
+                }
+            }
+            PKind::HomeDirectory => {
+                let path = self.norm_path(value.trim());
+                match std::fs::canonicalize(&path) {
+                    Ok(path) if path.is_dir() => {
+                        self.cwd = path.clone();
+                        self.proj_root = None;
+                        self.open_dir(&path);
+                        if self.buf().kind == BufKind::Dired
+                            && self.buf().path.as_deref() == Some(path.as_path())
+                        {
+                            self.say(format!("Base directory: {}", path.display()));
+                        }
+                    }
+                    _ => self.say(format!("Not a directory: {}", value.trim())),
+                }
+            }
 
             PKind::Kill => {
                 if let Some(i) = self.bufs.iter().position(|b| b.name == value) {
@@ -1823,7 +1867,10 @@ impl Editor {
                     self.last_search = value.clone();
                     self.last_search_forward = true;
                     let from = self.buf().cursor;
-                    if let Some((a, _)) = self.buf().find_forward(from, &value, true) { self.buf_mut().cursor = a; }
+                    if let Some((a, e)) = self.buf().find_forward(from, &value, true) {
+                        self.buf_mut().cursor = a;
+                        self.search_highlight = Some((self.cur, a, e));
+                    }
                 }
             }
             PKind::TabWidth => match value.trim().parse::<usize>() {
@@ -1905,6 +1952,7 @@ impl Editor {
     // ---------------------------------------------------------- isearch
     pub fn isearch_start(&mut self, forward: bool) {
         self.last_search_forward = forward;
+        self.search_highlight = None;
         let origin = self.buf().cursor;
         self.mode = Mode::ISearch(ISearch { query: String::new(), forward, origin, matched: None, failing: false });
     }
@@ -1944,6 +1992,7 @@ impl Editor {
         match key.name.as_str() {
             "C-g" => {
                 self.bufs[self.cur].cursor = s.origin;
+                self.search_highlight = None;
                 self.say("Quit");
                 return;
             }
@@ -1987,6 +2036,11 @@ impl Editor {
 
     fn finish_isearch(&mut self, s: &ISearch) {
         self.last_search_forward = s.forward;
+        self.search_highlight = if s.failing {
+            None
+        } else {
+            s.matched.map(|(start, end)| (self.cur, start, end))
+        };
         if !s.query.is_empty() {
             self.last_search = s.query.clone();
             self.search_history.retain(|q| q != &s.query);
@@ -2149,7 +2203,7 @@ impl Editor {
         let root = self.proj_root.clone().unwrap_or_else(|| self.cwd.clone());
         match meta {
             LineMeta::File { path, .. } => self.visit_file_line(&root.join(path), 1),
-            LineMeta::Grep { path, line } => self.visit_file_line(&root.join(path), line),
+            LineMeta::Grep { path, line, .. } => self.visit_file_line(&root.join(path), line),
             LineMeta::Commit(id) => self.git_show_commit(&id),
             LineMeta::Path(p) => {
                 if p.is_dir() {
@@ -2181,6 +2235,7 @@ impl Editor {
             Err(e) => self.say(e),
         }
     }
+
 }
 
 fn ow_config_dir() -> PathBuf {

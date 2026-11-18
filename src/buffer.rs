@@ -22,7 +22,12 @@ pub enum LineMeta {
     None,
     File { path: String, staged: bool },
     Commit(String),
-    Grep { path: String, line: usize },
+    Grep {
+        path: String,
+        line: usize,
+        match_start: usize,
+        match_end: usize,
+    },
     Path(PathBuf),
     Buf(String),
 }
@@ -71,6 +76,7 @@ pub struct Buffer {
     pub crlf: bool,
     pub final_nl: bool,
     pub mtime: Option<SystemTime>,
+    pub file_size: Option<u64>,
     pub hl: Highlighter,
     pub meta: Vec<LineMeta>,
     pub use_tabs: bool,
@@ -130,6 +136,7 @@ impl Buffer {
             crlf: false,
             final_nl: true,
             mtime: None,
+            file_size: None,
             hl: Highlighter::plain(),
             meta: Vec::new(),
             use_tabs: false,
@@ -251,9 +258,10 @@ impl Buffer {
         buffer.hl = Highlighter::detect(Some(path), &first);
         buffer.set_text(&text);
         buffer.read_only = binary;
-        buffer.mtime = std::fs::metadata(path)
-            .and_then(|metadata| metadata.modified())
-            .ok();
+        if let Ok(metadata) = std::fs::metadata(path) {
+            buffer.mtime = metadata.modified().ok();
+            buffer.file_size = Some(metadata.len());
+        }
 
         Ok(buffer)
     }
@@ -296,9 +304,10 @@ impl Buffer {
 
         std::fs::write(&target, text)?;
 
-        self.mtime = std::fs::metadata(&target)
-            .and_then(|metadata| metadata.modified())
-            .ok();
+        if let Ok(metadata) = std::fs::metadata(&target) {
+            self.mtime = metadata.modified().ok();
+            self.file_size = Some(metadata.len());
+        }
 
         if self.path.as_deref() != Some(target.as_path()) {
             self.path = Some(target.clone());
