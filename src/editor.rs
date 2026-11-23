@@ -470,6 +470,40 @@ pub enum VimMode {
     VisualBlock,
 }
 
+pub struct Completion {
+    pub items: Vec<String>,
+    pub selected: usize,
+    pub range: Option<(Pos, Pos)>,
+    prefix: String,
+    original: Option<String>,
+    original_cursor: Option<Pos>,
+    preview: Option<String>,
+}
+
+impl Completion {
+    fn new() -> Self {
+        Self {
+            items: Vec::new(),
+            selected: 0,
+            range: None,
+            prefix: String::new(),
+            original: None,
+            original_cursor: None,
+            preview: None,
+        }
+    }
+
+    fn clear(&mut self) {
+        self.items.clear();
+        self.selected = 0;
+        self.range = None;
+        self.prefix.clear();
+        self.original = None;
+        self.original_cursor = None;
+        self.preview = None;
+    }
+}
+
 // ----------------------------------------------------------------- editor
 pub struct Editor {
     pub bufs: Vec<Buffer>,
@@ -502,6 +536,10 @@ pub struct Editor {
     pub vim_insert_prefix: Option<char>,
     pub vim_last_insert_prefix: Option<char>,
     pub vim_multi_cursors: Vec<Pos>,
+    pub completion: Completion,
+    completion_project_root: Option<PathBuf>,
+    completion_project_stamp: Option<Instant>,
+    completion_project_words: HashMap<String, usize>,
     pub auto_pair: bool,
     pub kill_ring: Vec<String>,
     pub mode: Mode,
@@ -595,6 +633,10 @@ impl Editor {
             vim_insert_prefix: None,
             vim_last_insert_prefix: None,
             vim_multi_cursors: Vec::new(),
+            completion: Completion::new(),
+            completion_project_root: None,
+            completion_project_stamp: None,
+            completion_project_words: HashMap::new(),
             auto_pair: true,
             kill_ring: Vec::new(),
             mode: Mode::Normal,
@@ -1590,6 +1632,11 @@ impl Editor {
     // ---------------------------------------------------------- key input
     pub fn on_key(&mut self, ev: KeyEvent) {
         let Some(key) = keys::parse(&ev) else { return };
+        if self.completion.preview.is_some()
+            && !matches!(key.name.as_str(), "TAB" | "S-TAB" | "RET" | "ESC" | "C-[")
+        {
+            self.completion.clear();
+        }
         if matches!(self.mode, Mode::Normal)
             && self.project_tree_open
             && self.project_tree_focused
@@ -1622,6 +1669,210 @@ impl Editor {
             Mode::QReplace(q) => self.qr_key(q, key),
             Mode::YesNo(y) => self.yesno_key(y, key),
         }
+        if matches!(self.mode, Mode::Normal) && self.vim_mode == VimMode::Insert {
+            self.update_completion();
+        } else {
+            self.completion.clear();
+        }
+    }
+
+    fn cycle_completion(&mut self, forward: bool) {
+        let len = self.completion.items.len();
+        if len == 0 {
+            return;
+        }
+        self.completion.selected = if forward {
+            (self.completion.selected + 1) % len
+        } else {
+            (self.completion.selected + len - 1) % len
+        };
+        self.preview_completion();
+    }
+
+    fn preview_completion(&mut self) {
+        let Some((start, end)) = self.completion.range else {
+            return;
+        };
+        let Some(candidate) = self.completion.items.get(self.completion.selected).cloned() else {
+            return;
+        };
+        if self.completion.original.is_none() {
+            let original_cursor = self.buf().cursor;
+            let original = self.buf().text_in(start, end);
+            self.completion.original = Some(original);
+            self.completion.original_cursor = Some(original_cursor);
+        }
+        let buffer = self.buf_mut();
+        buffer.delete(start, end);
+        let preview_end = buffer.insert(start, &candidate);
+        buffer.cursor = preview_end;
+        self.completion.range = Some((start, preview_end));
+        self.completion.preview = Some(candidate);
+    }
+
+    fn cancel_completion(&mut self) {
+        if let (Some((start, end)), Some(original), Some(cursor)) = (
+            self.completion.range,
+            self.completion.original.clone(),
+            self.completion.original_cursor,
+        ) {
+            let buffer = self.buf_mut();
+            buffer.delete(start, end);
+            buffer.insert(start, &original);
+            buffer.cursor = buffer.clamp(cursor);
+        }
+        self.completion.clear();
+    }
+
+    fn accept_completion(&mut self) -> bool {
+        let Some((start, end)) = self.completion.range else {
+            return false;
+        };
+        let Some(candidate) = self.completion.items.get(self.completion.selected).cloned() else {
+            return false;
+        };
+        if self.completion.preview.is_some() {
+            self.completion.clear();
+            return true;
+        }
+        let buffer = self.buf_mut();
+        buffer.delete(start, end);
+        buffer.cursor = buffer.insert(start, &candidate);
+        buffer.mark_active = false;
+        self.completion.clear();
+        true
+    }
+
+    fn update_completion(&mut self) {
+        if self.completion.preview.is_some() {
+            return;
+        }
+        let buffer = self.buf();
+        if buffer.kind != BufKind::File || !self.vim_multi_cursors.is_empty() {
+            self.completion.clear();
+            return;
+        }
+        let cursor = buffer.cursor;
+        let Some(line) = buffer.lines.get(cursor.line) else {
+            self.completion.clear();
+            return;
+        };
+        let chars: Vec<char> = line.chars().collect();
+        let mut start = cursor.col.min(chars.len());
+        while start > 0 && is_word(chars[start - 1]) {
+            start -= 1;
+        }
+        let mut end = cursor.col.min(chars.len());
+        while end < chars.len() && is_word(chars[end]) {
+            end += 1;
+        }
+        let prefix: String = chars[start..cursor.col.min(chars.len())].iter().collect();
+        if prefix.chars().count() < 2 {
+            self.completion.clear();
+            return;
+        }
+        let range = (Pos::new(cursor.line, start), Pos::new(cursor.line, end));
+        let keep_selection = self.completion.prefix == prefix && self.completion.range == Some(range);
+        let previous_selection = self.completion.selected;
+
+        self.refresh_project_completion_words();
+        let mut scores: HashMap<String, i32> = self
+            .completion_project_words
+            .iter()
+            .filter(|(word, _)| {
+                word.starts_with(&prefix) && word.as_str() != prefix.as_str()
+            })
+            .map(|(word, count)| (word.clone(), 10 + (*count).min(10) as i32))
+            .collect();
+
+        for word in crate::langs::completion_words(&self.buf().hl.name) {
+            if word.starts_with(&prefix) && word != prefix.as_str() {
+                scores.entry(word.to_string()).or_insert(100);
+            }
+        }
+
+        for (index, candidate_buffer) in self.bufs.iter().enumerate() {
+            if candidate_buffer.kind != BufKind::File {
+                continue;
+            }
+            let base_score = if index == self.cur { 1_000 } else { 300 };
+            let from = if index == self.cur {
+                cursor.line.saturating_sub(500)
+            } else {
+                0
+            };
+            let to = if index == self.cur {
+                (cursor.line + 501).min(candidate_buffer.lines.len())
+            } else {
+                candidate_buffer.lines.len().min(2_000)
+            };
+            let text = candidate_buffer.lines[from..to].join("\n");
+            let mut found = HashMap::<String, usize>::new();
+            collect_completion_words(&text, &mut found);
+            for (word, count) in found {
+                if word.starts_with(&prefix) && word != prefix {
+                    let score = base_score + count.min(20) as i32;
+                    scores
+                        .entry(word)
+                        .and_modify(|existing| *existing = (*existing).max(score))
+                        .or_insert(score);
+                }
+            }
+        }
+
+        let mut items: Vec<(String, i32)> = scores.into_iter().collect();
+        items.sort_by(|(a, score_a), (b, score_b)| {
+            score_b.cmp(score_a).then(a.len().cmp(&b.len())).then(a.cmp(b))
+        });
+        self.completion.items = items.into_iter().take(5).map(|(word, _)| word).collect();
+        self.completion.selected = if keep_selection {
+            previous_selection.min(self.completion.items.len().saturating_sub(1))
+        } else {
+            0
+        };
+        self.completion.range = (!self.completion.items.is_empty()).then_some(range);
+        self.completion.prefix = prefix;
+    }
+
+    fn refresh_project_completion_words(&mut self) {
+        let repo = self.repo_here();
+        let root = self
+            .proj_root
+            .clone()
+            .or_else(|| repo.as_ref().and_then(git::workdir))
+            .unwrap_or_else(|| self.cwd.clone());
+        let fresh = self.completion_project_root.as_ref() == Some(&root)
+            && self
+                .completion_project_stamp
+                .is_some_and(|stamp| stamp.elapsed() < Duration::from_secs(10));
+        if fresh {
+            return;
+        }
+
+        let files = repo
+            .as_ref()
+            .map(git::project_files)
+            .unwrap_or_else(|| git::walk_files(&root, 5_000));
+        let mut words = HashMap::new();
+        let mut bytes_read = 0usize;
+        for relative_path in files
+            .iter()
+            .filter(|path| is_completion_source(path))
+            .take(1_000)
+        {
+            let path = root.join(relative_path);
+            let Ok(metadata) = std::fs::metadata(&path) else { continue };
+            let size = metadata.len() as usize;
+            if size > 256 * 1024 || bytes_read + size > 8 * 1024 * 1024 {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(path) else { continue };
+            bytes_read += text.len();
+            collect_completion_words(&text, &mut words);
+        }
+        self.completion_project_root = Some(root);
+        self.completion_project_stamp = Some(Instant::now());
+        self.completion_project_words = words;
     }
 
     fn handle_project_tree_key(&mut self, key: &Key) -> bool {
@@ -2926,6 +3177,28 @@ fn is_emacs_motion_key(name: &str) -> bool {
             | "C-<left>" | "C-<right>"
             | "C-<home>" | "C-<end>"
             | "<pageup>" | "<pagedown>"
+    )
+}
+
+fn collect_completion_words(text: &str, words: &mut HashMap<String, usize>) {
+    for word in text.split(|c: char| !is_word(c)) {
+        if word.chars().count() >= 2 {
+            *words.entry(word.to_string()).or_default() += 1;
+        }
+    }
+}
+
+fn is_completion_source(path: &str) -> bool {
+    let extension = Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    matches!(
+        extension.as_str(),
+        "c" | "cc" | "cpp" | "cs" | "dart" | "ex" | "exs" | "go" | "h" | "hpp"
+            | "java" | "js" | "jsx" | "kt" | "lua" | "php" | "py" | "rb" | "rs"
+            | "scala" | "sh" | "swift" | "ts" | "tsx" | "vue" | "zig"
     )
 }
 

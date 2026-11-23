@@ -578,6 +578,99 @@ fn render_project_tree(
     }
 }
 
+fn truncate_display_width(text: &str, max_width: usize) -> String {
+    let mut result = String::new();
+    let mut width = 0;
+    for character in text.chars() {
+        let character_width = character.width().unwrap_or(0);
+        if width + character_width > max_width {
+            break;
+        }
+        result.push(character);
+        width += character_width;
+    }
+    result
+}
+
+fn render_completion_popup(
+    buffer: &mut ratatui::buffer::Buffer,
+    area: Rect,
+    echo_y: u16,
+    cursor: (u16, u16),
+    completion: &Completion,
+) {
+    let count = completion.items.len().min(5);
+    if count == 0 {
+        return;
+    }
+    let available_rows = echo_y.saturating_sub(area.y).saturating_sub(2) as usize;
+    let rows = count.min(available_rows);
+    if rows == 0 {
+        return;
+    }
+
+    let max_item_width = completion
+        .items
+        .iter()
+        .take(rows)
+        .map(|item| unicode_width::UnicodeWidthStr::width(item.as_str()))
+        .max()
+        .unwrap_or(0);
+    let panel_width = max_item_width.saturating_add(5).min(area.width as usize);
+    if panel_width < 4 {
+        return;
+    }
+    let panel_width = panel_width as u16;
+    let panel_height = rows as u16 + 2;
+    let right = area.x.saturating_add(area.width);
+    let preferred_x = cursor.0.saturating_add(1);
+    let x = if preferred_x.saturating_add(panel_width) <= right {
+        preferred_x
+    } else {
+        right.saturating_sub(panel_width).max(area.x)
+    };
+
+    let below = cursor.1.saturating_add(1);
+    let y = if below.saturating_add(panel_height) <= echo_y {
+        below
+    } else {
+        cursor.1.saturating_sub(panel_height)
+    };
+    if y < area.y || y.saturating_add(panel_height) > echo_y {
+        return;
+    }
+
+    let border_style = Style::default().fg(c(DIM)).bg(c(LINE));
+    let body_style = Style::default().fg(c(FG)).bg(c(LINE));
+    let selected_style = Style::default().fg(c(FG)).bg(c(SEL));
+    let inner_width = panel_width.saturating_sub(2) as usize;
+    let top = format!("┌{}┐", "─".repeat(inner_width));
+    let bottom = format!("└{}┘", "─".repeat(inner_width));
+    buffer.set_string(x, y, top, border_style);
+
+    for index in 0..rows {
+        let row_y = y + index as u16 + 1;
+        buffer.set_string(x, row_y, "│", border_style);
+        buffer.set_string(
+            x + 1,
+            row_y,
+            " ".repeat(inner_width),
+            body_style,
+        );
+        let style = if index == completion.selected {
+            selected_style
+        } else {
+            body_style
+        };
+        let item_width = inner_width.saturating_sub(3);
+        let item = truncate_display_width(&completion.items[index], item_width);
+        let marker = if index == completion.selected { "> " } else { "  " };
+        buffer.set_string(x + 1, row_y, format!("{marker}{item}"), style);
+        buffer.set_string(x + panel_width - 1, row_y, "│", border_style);
+    }
+    buffer.set_string(x, y + panel_height - 1, bottom, border_style);
+}
+
 pub fn render(frame: &mut Frame, editor: &mut Editor) {
     let area = frame.area();
     let (width, height) = (area.width as usize, area.height as usize);
@@ -699,6 +792,21 @@ pub fn render(frame: &mut Frame, editor: &mut Editor) {
 
     // ---- echo area
     let echo_y = (height - 1) as u16;
+    if matches!(editor.mode, Mode::Normal)
+        && editor.vim_mode == VimMode::Insert
+        && !editor.project_tree_focused
+        && !editor.completion.items.is_empty()
+    {
+        if let Some(position) = cursor {
+            render_completion_popup(
+                frame_buffer,
+                area,
+                echo_y,
+                position,
+                &editor.completion,
+            );
+        }
+    }
 
     match &editor.mode {
         Mode::Prompt(prompt) => {
@@ -904,6 +1012,26 @@ mod tests {
         render_project_tree(&mut frame, &editor, rect);
 
         assert_ne!(frame[(0, 1)].style().bg, Some(c(SEL)));
+    }
+
+    #[test]
+    fn completion_popup_is_anchored_below_cursor_and_shows_at_most_five_items() {
+        let mut editor = Editor::new();
+        editor.completion.items = (0..7).map(|index| format!("item{index}")).collect();
+        let area = Rect::new(0, 0, 20, 12);
+        let mut frame = ratatui::buffer::Buffer::empty(area);
+
+        render_completion_popup(
+            &mut frame,
+            area,
+            11,
+            (2, 2),
+            &editor.completion,
+        );
+
+        assert_eq!(frame[(3, 3)].symbol(), "┌");
+        assert_eq!(frame[(6, 8)].symbol(), "i");
+        assert_eq!(frame[(3, 9)].symbol(), "└");
     }
 
     #[test]

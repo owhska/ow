@@ -352,3 +352,83 @@ pub fn find(ext: Option<&str>, filename: Option<&str>) -> Option<&'static Lang> 
 pub fn by_name(name: &str) -> Option<&'static Lang> {
     LANGS.iter().find(|l| l.name.eq_ignore_ascii_case(name))
 }
+
+pub fn completion_words(name: &str) -> Vec<&'static str> {
+    let lang = by_name(name);
+    let mut words: Vec<&'static str> = lang
+        .map(|lang| lang.keywords.iter().chain(lang.types.iter()).copied().collect())
+        .unwrap_or_default();
+    let builtin_words: &[&str] = match name.to_ascii_lowercase().as_str() {
+        "python" => &[
+            "abs", "all", "and", "any", "as", "assert", "async", "await", "bin", "bool",
+            "break", "bytearray", "bytes", "callable", "class", "classmethod", "chr", "compile",
+            "complex", "del", "dict", "dir", "divmod", "elif", "else", "enumerate", "eval",
+            "except", "exec", "filter", "finally", "float", "for", "format", "frozenset",
+            "False", "None", "True", "from", "getattr", "global", "hasattr", "hash", "help",
+            "hex", "if", "import", "in", "input", "int", "is", "isinstance", "issubclass",
+            "iter", "lambda", "len", "list", "locals", "map", "max", "memoryview", "min",
+            "next", "nonlocal", "not", "object", "oct", "open", "or", "ord", "pass", "pow",
+            "print", "property", "raise", "range", "repr",
+            "return", "reversed", "round", "set", "setattr", "slice", "sorted", "staticmethod",
+            "str", "sum", "super", "try", "tuple", "type", "vars", "while", "with", "yield",
+            "zip", "self", "cls", "Path", "os", "sys", "json", "re", "math", "datetime",
+            "typing",
+        ],
+        "rust" => &[
+            "as", "async", "await", "bool", "Box", "break", "char", "const", "continue", "crate",
+            "dbg", "default", "derive", "else", "enum", "Err", "error", "extern", "false", "fn",
+            "for", "format", "From", "HashMap", "HashSet", "if", "impl", "in", "into", "let",
+            "loop", "macro_rules", "match", "mod", "move", "mut", "None", "Ok", "Option", "panic",
+            "Path", "PathBuf", "print", "println", "pub", "Result", "return", "self", "Self",
+            "Some", "String", "struct", "super", "trait", "true", "type", "u8", "usize", "Vec",
+            "where", "while",
+        ],
+        "javascript" | "jsx" | "typescript" | "tsx" => &[
+            "Array", "async", "await", "Boolean", "break", "catch", "class", "const", "console",
+            "Date", "debugger", "document", "Error", "export", "extends", "fetch", "finally",
+            "for", "function", "if", "import", "JSON", "let", "Map", "Math", "new", "null",
+            "Number", "Object", "Promise", "prototype", "return", "Set", "String", "super",
+            "switch", "this", "throw", "try", "undefined", "var", "window", "yield",
+        ],
+        "go" => &[
+            "append", "bool", "byte", "cap", "case", "chan", "close", "complex", "const",
+            "context", "copy", "defer", "delete", "else", "error", "fallthrough", "false",
+            "float32", "float64", "for", "func", "go", "goto", "if", "imag", "int", "int32",
+            "int64", "iota", "len", "make", "map", "max", "min", "new", "nil", "panic", "print",
+            "println", "range", "recover", "return", "rune", "select", "string", "struct", "true",
+            "uint", "uint64", "var",
+        ],
+        "c" => &[
+            "auto", "bool", "break", "case", "char", "const", "continue", "default", "do",
+            "double", "else", "enum", "extern", "false", "FILE", "float", "for", "free",
+            "if", "include", "int", "long", "malloc", "memcpy", "NULL", "printf", "return",
+            "scanf", "short", "signed", "sizeof", "static", "stderr", "stdin", "stdout",
+            "struct", "switch", "typedef", "union", "unsigned", "void", "while",
+        ],
+        "c++" | "cpp" => &[
+            "auto", "bool", "break", "case", "catch", "char", "class", "const", "constexpr",
+            "continue", "cout", "delete", "double", "else", "enum", "false", "float", "for",
+            "if", "include", "int", "long", "map", "namespace", "new", "nullptr", "private",
+            "public", "return", "size_t", "std", "string", "struct", "switch", "template",
+            "this", "true", "try", "typedef", "using", "vector", "void", "while",
+        ],
+        _ => &[],
+    };
+    if builtin_words.is_empty() && lang.is_none() {
+        words.extend([
+            "add", "append", "async", "await", "bool", "break", "build", "case", "catch",
+            "char", "class", "close", "const", "continue", "create", "debug", "def", "delete",
+            "do", "else", "enum", "error", "false", "file", "filter", "find", "float", "for",
+            "format", "from", "func", "function", "get", "if", "import", "init", "input", "int",
+            "interface", "item", "len", "list", "log", "main", "make", "map", "match", "max",
+            "min", "module", "new", "nil", "null", "object", "open", "option", "print",
+            "println", "private", "public", "read", "return", "result", "self", "set", "sort",
+            "static", "string", "struct", "test", "this", "throw", "true", "try", "type",
+            "update", "var", "void", "while", "write", "yield", "Array", "Boolean", "Error",
+            "List", "Map", "None", "Ok", "Option", "Path", "Promise", "Result", "Set", "Some",
+            "String", "Vec",
+        ]);
+    }
+    words.extend(builtin_words.iter().copied());
+    words
+}

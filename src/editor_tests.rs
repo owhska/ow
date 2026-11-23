@@ -19,6 +19,7 @@ fn ev(k: &str) -> KeyEvent {
         "RET" => KeyCode::Enter,
         "DEL" => KeyCode::Backspace,
         "TAB" => KeyCode::Tab,
+        "S-TAB" => KeyCode::BackTab,
         "SPC" => KeyCode::Char(' '),
         "ESC" => KeyCode::Esc,
         "<left>" => KeyCode::Left,
@@ -38,7 +39,7 @@ fn keys(e: &mut Editor, seq: &str) {
             || k.starts_with("M-")
             || matches!(
                 k,
-                "RET" | "DEL" | "TAB" | "SPC" | "ESC" | "<left>" | "<right>" | "<up>" | "<down>"
+                "RET" | "DEL" | "TAB" | "S-TAB" | "SPC" | "ESC" | "<left>" | "<right>" | "<up>" | "<down>"
             );
         if named {
             e.on_key(ev(k));
@@ -62,6 +63,137 @@ fn editor_in(dir: &PathBuf) -> Editor {
     e.cwd = dir.clone();
     e.vim_mode = VimMode::Insert;
     e
+}
+
+#[test]
+fn insert_completion_uses_project_source_files() {
+    let dir = tmpdir("project-completion");
+    let current = dir.join("main.rs");
+    std::fs::write(&current, "").unwrap();
+    std::fs::write(
+        dir.join("helpers.rs"),
+        "fn project_context_helper() {}\n",
+    )
+    .unwrap();
+
+    let mut e = editor_in(&dir);
+    let index = e.open_path(&current).unwrap();
+    e.switch_to(index);
+    keys(&mut e, "project_con");
+
+    assert!(e.completion.items.contains(&"project_context_helper".to_string()));
+    keys(&mut e, "RET");
+    assert_eq!(e.buf().lines[0], "project_context_helper");
+}
+
+#[test]
+fn python_completion_includes_editor_builtins_without_file_context() {
+    let dir = tmpdir("python-builtins");
+    let current = dir.join("main.py");
+    std::fs::write(&current, "").unwrap();
+
+    let mut e = editor_in(&dir);
+    let index = e.open_path(&current).unwrap();
+    e.switch_to(index);
+    keys(&mut e, "pri");
+
+    assert!(e.completion.items.contains(&"print".to_string()));
+    keys(&mut e, "RET");
+    assert_eq!(e.buf().lines[0], "print");
+}
+
+#[test]
+fn completion_uses_javascript_typescript_c_and_generic_words() {
+    let dir = tmpdir("language-builtins");
+    let mut e = editor_in(&dir);
+    for (filename, prefix, expected) in [
+        ("main.js", "con", "console"),
+        ("main.ts", "func", "function"),
+        ("main.c", "pri", "printf"),
+        ("Main.java", "fun", "function"),
+    ] {
+        let path = dir.join(filename);
+        std::fs::write(&path, "").unwrap();
+        let index = e.open_path(&path).unwrap();
+        e.switch_to(index);
+        keys(&mut e, prefix);
+
+        assert!(
+            e.completion.items.iter().any(|item| item == expected),
+            "{expected} missing for {filename}: {:?}",
+            e.completion.items
+        );
+    }
+}
+
+#[test]
+fn insert_completion_can_choose_another_local_suggestion() {
+    let dir = tmpdir("local-completion");
+    let mut e = editor_in(&dir);
+    e.buf_mut().kind = BufKind::File;
+    e.buf_mut().lines = vec![
+        "project_context_candy project_context_donut".to_string(),
+        String::new(),
+    ];
+    e.buf_mut().cursor = Pos::new(1, 0);
+    keys(&mut e, "project_con");
+    keys(&mut e, "TAB");
+    assert_eq!(e.buf().lines[1], "project_context_donut");
+    keys(&mut e, "TAB");
+    assert_eq!(e.buf().lines[1], "project_context_candy");
+    keys(&mut e, "S-TAB");
+    assert_eq!(e.buf().lines[1], "project_context_donut");
+    keys(&mut e, "RET");
+
+    assert_eq!(e.buf().lines[1], "project_context_donut");
+}
+
+#[test]
+fn insert_completion_is_cancelled_by_escape() {
+    let dir = tmpdir("cancel-completion");
+    let mut e = editor_in(&dir);
+    e.buf_mut().kind = BufKind::File;
+    e.buf_mut().lines = vec!["contextual_name".to_string(), "con".to_string()];
+    e.buf_mut().cursor = Pos::new(1, 3);
+    keys(&mut e, "t");
+    assert!(!e.completion.items.is_empty());
+    keys(&mut e, "TAB");
+    let preview = e.buf().lines[1].clone();
+    assert_ne!(preview, "cont");
+    keys(&mut e, "ESC");
+
+    assert!(e.completion.items.is_empty());
+    assert_eq!(e.vim_mode, VimMode::Normal);
+    assert_eq!(e.buf().lines[1], "cont");
+}
+
+#[test]
+fn insert_tab_still_indents_without_completion() {
+    let dir = tmpdir("tab-indent");
+    let mut e = editor_in(&dir);
+    e.buf_mut().kind = BufKind::File;
+    keys(&mut e, "TAB");
+
+    assert_eq!(e.buf().lines[0], "    ");
+}
+
+#[test]
+fn dd_removes_the_entire_last_line() {
+    let dir = tmpdir("dd-last-line");
+    let mut e = editor_in(&dir);
+    e.buf_mut().set_text("first\nlast");
+    e.vim_mode = VimMode::Normal;
+    e.buf_mut().cursor = Pos::new(1, 0);
+
+    keys(&mut e, "d d");
+
+    assert_eq!(e.buf().lines, vec!["first"]);
+    assert_eq!(e.buf().cursor, Pos::new(0, 0));
+
+    e.buf_mut().set_text("only");
+    e.vim_mode = VimMode::Normal;
+    keys(&mut e, "d d");
+    assert_eq!(e.buf().lines, vec![""]);
 }
 
 #[test]

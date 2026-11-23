@@ -169,6 +169,7 @@ impl Editor {
     fn handle_vim_insert(&mut self, key: Key) -> bool {
         let n = key.name.as_str();
         if self.vim_recording_insert && !matches!(n, "ESC" | "C-[")
+            && !(matches!(n, "TAB" | "S-TAB" | "RET") && !self.completion.items.is_empty())
             && (key.ch.is_some() || matches!(n, "SPC" | "RET" | "DEL" | "TAB" | "S-TAB"))
         {
             self.vim_insert_record.push(key.clone());
@@ -199,6 +200,7 @@ impl Editor {
         if self.vim_replace_mode {
             match n {
                 "ESC" | "C-[" => {
+                    self.cancel_completion();
                     self.vim_replace_mode = false;
                     self.vim_mode = VimMode::Normal;
                     if self.vim_recording_insert {
@@ -212,7 +214,13 @@ impl Editor {
                     if self.buf().cursor.col > 0 { self.buf_mut().cursor.col -= 1; }
                     return true;
                 }
-                "RET" => { self.newline_indent(); return true; }
+                "RET" => {
+                    if self.accept_completion() {
+                        return true;
+                    }
+                    self.newline_indent();
+                    return true;
+                }
                 "DEL" => { self.backward_char(); return true; }
                 _ => if let Some(c) = key.ch {
                     let b = self.buf_mut();
@@ -228,6 +236,7 @@ impl Editor {
 
         match n {
             "ESC" | "C-[" => {
+                self.cancel_completion();
                 self.vim_mode = VimMode::Normal;
                 self.vim_multi_cursors.clear();
                 if self.vim_recording_insert {
@@ -247,6 +256,9 @@ impl Editor {
                 return true;
             }
             "RET" => {
+                if self.accept_completion() {
+                    return true;
+                }
                 self.newline_indent();
                 return true;
             }
@@ -289,10 +301,18 @@ impl Editor {
                 return true;
             }
             "TAB" => {
+                if !self.completion.items.is_empty() {
+                    self.cycle_completion(true);
+                    return true;
+                }
                 self.indent_tab();
                 return true;
             }
             "S-TAB" => {
+                if !self.completion.items.is_empty() {
+                    self.cycle_completion(false);
+                    return true;
+                }
                 self.unindent();
                 return true;
             }
@@ -1884,6 +1904,17 @@ impl Editor {
         } else {
             if start <= end {(start,end)} else {(end,start)}
         };
+        let (delete_start, delete_end, cursor_after_delete) = if op == 'd' && linewise {
+            let lo = start.line.min(end.line);
+            let hi = start.line.max(end.line);
+            if hi + 1 == b.lines.len() && lo > 0 {
+                (Pos::new(lo - 1, b.line_len(lo - 1)), b.end(), Pos::new(lo - 1, 0))
+            } else {
+                (a, z, a)
+            }
+        } else {
+            (a, z, a)
+        };
         let text = b.text_in(a,z);
         if let Some(reg) = self.vim_register.take() {
             if matches!(reg, '+' | '*') { crate::clipboard::set_clipboard(&text); }
@@ -1904,8 +1935,8 @@ impl Editor {
             self.vim_registers.insert('1', text.clone());
             if op == 'c' { self.buf_mut().begin_undo_group(); }
             else { self.buf_mut().group += 1; }
-            self.buf_mut().delete(a,z);
-            self.buf_mut().cursor=a;
+            self.buf_mut().delete(delete_start,delete_end);
+            self.buf_mut().cursor=cursor_after_delete;
             self.buf_mut().mark_active=false;
             self.kill(&text,false);
             if op=='c' {
