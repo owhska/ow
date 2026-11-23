@@ -557,7 +557,7 @@ fn render_project_tree(
 ) {
     let Some(tree) = &editor.project_tree else { return };
     let title: String = tree.root.to_string_lossy().chars().take(rect.width as usize).collect();
-    buffer.set_string(0, 0, title, bold().fg(c(TYPE)));
+    buffer.set_string(rect.x, rect.y, title, bold().fg(c(TYPE)));
 
     let visible_height = rect.height.saturating_sub(1) as usize;
     for (offset, entry) in tree.entries.iter().skip(tree.top).take(visible_height).enumerate() {
@@ -574,7 +574,99 @@ fn render_project_tree(
             Style::default()
         };
         let line: String = line.chars().take(rect.width as usize).collect();
-        buffer.set_string(0, (offset + 1) as u16, line, style);
+        buffer.set_string(rect.x, rect.y + offset as u16 + 1, line, style);
+    }
+}
+
+fn render_tab_line(frame_buffer: &mut ratatui::buffer::Buffer, editor: &Editor, width: usize) {
+    let active = editor.cur.min(editor.bufs.len().saturating_sub(1));
+    let root = editor.proj_root.as_deref().unwrap_or(&editor.cwd);
+    let project = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("ow");
+    let current = editor.bufs.get(active);
+
+    let mut right = String::new();
+    if let Some(git) = &editor.git {
+        right.push_str(&format!(" git:{}", git.branch));
+        if git.ahead > 0 {
+            right.push_str(&format!(" ↑{}", git.ahead));
+        }
+        if git.behind > 0 {
+            right.push_str(&format!(" ↓{}", git.behind));
+        }
+    }
+    if let Some(buffer) = current {
+        let language = if buffer.kind == BufKind::File {
+            buffer.hl.name.as_str()
+        } else {
+            match buffer.kind {
+                BufKind::GitStatus => "Git",
+                BufKind::GitLog => "Git Log",
+                BufKind::GitDiff => "Diff",
+                BufKind::GitBlame => "Blame",
+                BufKind::Grep => "Search",
+                BufKind::Dired => "Directory",
+                BufKind::List => "List",
+                BufKind::Help => "Help",
+                BufKind::File => unreachable!(),
+            }
+        };
+        let line = buffer.cursor.line + 1;
+        let total = buffer.lines.len().max(1);
+        right.push_str(&format!(
+            " [{}] {}/{}:{} {}%",
+            language,
+            line,
+            total,
+            buffer.cursor.col + 1,
+            line * 100 / total
+        ));
+        if buffer.modified {
+            right.push_str(" [+]");
+        }
+    }
+
+    let right_width = unicode_width::UnicodeWidthStr::width(right.as_str()).min(width);
+    let tabs_width = width.saturating_sub(right_width);
+    let mut x = 0usize;
+    frame_buffer.set_string(0, 0, " ".repeat(width), fg(c(DIM)));
+
+    for (index, buf) in editor.bufs.iter().enumerate() {
+        let label = format!(
+            "{} - {}{}",
+            project,
+            buf.name,
+            if buf.modified && index != active { " +" } else { "" }
+        );
+        let separator = if index == 0 { "" } else { " | " };
+        let needed = unicode_width::UnicodeWidthStr::width(separator)
+            + unicode_width::UnicodeWidthStr::width(label.as_str());
+        if x + needed > tabs_width {
+            break;
+        }
+        if !separator.is_empty() {
+            frame_buffer.set_string(x as u16, 0, separator, fg(c(DIM)));
+            x += unicode_width::UnicodeWidthStr::width(separator);
+        }
+        let style = if index == active {
+            fg(Color::Rgb(0xe5, 0xc0, 0x7b)).add_modifier(Modifier::BOLD)
+        } else {
+            fg(c(DIM))
+        };
+        x += unicode_width::UnicodeWidthStr::width(label.as_str());
+        frame_buffer.set_string((x - unicode_width::UnicodeWidthStr::width(label.as_str())) as u16, 0, label, style);
+    }
+
+    if right_width > 0 {
+        let right_style = if current.is_some_and(|buffer| buffer.modified) {
+            fg(c(WARN)).add_modifier(Modifier::BOLD)
+        } else {
+            fg(c(DIM))
+        };
+        frame_buffer.set_string((width - right_width) as u16, 0, right, right_style);
     }
 }
 
@@ -585,7 +677,7 @@ pub fn render(frame: &mut Frame, editor: &mut Editor) {
     editor.screen_w = area.width;
     editor.screen_h = area.height;
 
-    if height < 3 || width < 12 {
+    if height < 4 || width < 12 {
         return;
     }
 
@@ -597,11 +689,13 @@ pub fn render(frame: &mut Frame, editor: &mut Editor) {
 
     let tree_width = editor.project_tree_width();
     let window_x = if tree_width > 0 { tree_width + 1 } else { 0 };
+    render_tab_line(frame.buffer_mut(), editor, width);
+
     let window_area = Rect::new(
         window_x,
-        0,
+        1,
         (width as u16).saturating_sub(window_x),
-        (height - 1) as u16,
+        (height - 2) as u16,
     );
     let mut window_rects = Vec::new();
     let mut separators = Vec::new();
@@ -642,9 +736,9 @@ pub fn render(frame: &mut Frame, editor: &mut Editor) {
         render_project_tree(
             frame_buffer,
             editor,
-            Rect::new(0, 0, tree_width, (height - 1) as u16),
+            Rect::new(0, 1, tree_width, (height - 2) as u16),
         );
-        for row in 0..height.saturating_sub(1) as u16 {
+        for row in 1..height.saturating_sub(1) as u16 {
             frame_buffer.set_string(tree_width, row, "│", fg(c(DIM)));
         }
     }
@@ -690,7 +784,7 @@ pub fn render(frame: &mut Frame, editor: &mut Editor) {
 
     if tree_width > 0 && editor.project_tree_focused {
         if let Some(tree) = &editor.project_tree {
-            let y = tree.cursor.saturating_sub(tree.top) + 1;
+            let y = tree.cursor.saturating_sub(tree.top) + 2;
             if y < height.saturating_sub(1) {
                 cursor = Some((1.min(tree_width.saturating_sub(1)), y as u16));
             }

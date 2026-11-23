@@ -1803,12 +1803,15 @@ impl Editor {
         use ratatui::crossterm::event::{MouseButton, MouseEventKind};
         use ratatui::layout::Rect;
 
-        if self.screen_w == 0 || self.screen_h <= 1 {
+        if self.screen_w == 0 || self.screen_h <= 2 {
             return;
         }
 
         if ev.kind == MouseEventKind::Up(MouseButton::Left) {
             self.mouse_resize = None;
+            return;
+        }
+        if ev.row == 0 {
             return;
         }
 
@@ -1817,7 +1820,7 @@ impl Editor {
             match ev.kind {
                 MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                     if let Some(tree) = self.project_tree.as_mut() {
-                        let visible = self.screen_h.saturating_sub(2) as usize;
+                        let visible = self.screen_h.saturating_sub(3) as usize;
                         let max_top = tree.entries.len().saturating_sub(visible);
                         tree.top = if ev.kind == MouseEventKind::ScrollUp {
                             tree.top.saturating_sub(3)
@@ -1829,11 +1832,11 @@ impl Editor {
                 }
                 MouseEventKind::Down(MouseButton::Left) => {
                     self.project_tree_focused = true;
-                    if ev.row == 0 {
+                    if ev.row == 1 {
                         return;
                     }
                     let Some(tree) = self.project_tree.as_mut() else { return };
-                    let line = tree.top + ev.row.saturating_sub(1) as usize;
+                    let line = tree.top + ev.row.saturating_sub(2) as usize;
                     if line >= tree.entries.len() {
                         return;
                     }
@@ -1862,9 +1865,9 @@ impl Editor {
         let window_x = if tree_width > 0 { tree_width + 1 } else { 0 };
         let win_area = Rect::new(
             window_x,
-            0,
+            1,
             self.screen_w.saturating_sub(window_x),
-            self.screen_h.saturating_sub(1),
+            self.screen_h.saturating_sub(2),
         );
         let mut win_rects = Vec::new();
         let mut separators = Vec::new();
