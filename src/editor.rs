@@ -1681,11 +1681,13 @@ impl Editor {
         if len == 0 {
             return;
         }
-        self.completion.selected = if forward {
-            (self.completion.selected + 1) % len
-        } else {
-            (self.completion.selected + len - 1) % len
-        };
+        if self.completion.preview.is_some() {
+            self.completion.selected = if forward {
+                (self.completion.selected + 1) % len
+            } else {
+                (self.completion.selected + len - 1) % len
+            };
+        }
         self.preview_completion();
     }
 

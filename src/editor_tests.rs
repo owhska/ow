@@ -138,14 +138,14 @@ fn insert_completion_can_choose_another_local_suggestion() {
     e.buf_mut().cursor = Pos::new(1, 0);
     keys(&mut e, "project_con");
     keys(&mut e, "TAB");
-    assert_eq!(e.buf().lines[1], "project_context_donut");
-    keys(&mut e, "TAB");
     assert_eq!(e.buf().lines[1], "project_context_candy");
-    keys(&mut e, "S-TAB");
+    keys(&mut e, "TAB");
     assert_eq!(e.buf().lines[1], "project_context_donut");
+    keys(&mut e, "S-TAB");
+    assert_eq!(e.buf().lines[1], "project_context_candy");
     keys(&mut e, "RET");
 
-    assert_eq!(e.buf().lines[1], "project_context_donut");
+    assert_eq!(e.buf().lines[1], "project_context_candy");
 }
 
 #[test]
