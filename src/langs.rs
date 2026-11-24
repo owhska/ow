@@ -7,6 +7,7 @@ pub struct Lang {
     pub files: &'static [&'static str],
     pub keywords: &'static [&'static str],
     pub types: &'static [&'static str],
+    pub builtins: &'static [&'static str],
     pub line_comments: &'static [&'static str],
     pub block: Option<(&'static str, &'static str)>,
     pub nested: bool,
@@ -32,6 +33,7 @@ const BASE: Lang = Lang {
     files: &[],
     keywords: &[],
     types: &[],
+    builtins: &[],
     line_comments: &[],
     block: None,
     nested: false,
@@ -63,6 +65,13 @@ pub static LANGS: &[Lang] = &[
             "string", "number", "boolean", "any", "unknown", "object", "symbol", "bigint", "Promise", "Array",
             "Record", "Partial", "Readonly", "Map", "Set", "Required", "Pick", "Omit",
         ],
+        builtins: &[
+            "Array", "async", "await", "Boolean", "break", "catch", "class", "const", "console",
+            "Date", "debugger", "document", "Error", "export", "extends", "fetch", "finally",
+            "for", "function", "if", "import", "JSON", "let", "Map", "Math", "new", "null",
+            "Number", "Object", "Promise", "prototype", "return", "Set", "String", "super",
+            "switch", "this", "throw", "try", "undefined", "var", "window", "yield",
+        ],
         line_comments: &["//"],
         block: C_BLOCK,
         multi: &["`"],
@@ -81,6 +90,13 @@ pub static LANGS: &[Lang] = &[
             "await", "abstract", "declare", "from", "of", "type", "namespace", "readonly", "keyof", "undefined",
         ],
         types: &["string", "number", "boolean", "any", "unknown", "object", "never", "void", "Promise", "Array"],
+        builtins: &[
+            "Array", "async", "await", "Boolean", "break", "catch", "class", "const", "console",
+            "Date", "debugger", "document", "Error", "export", "extends", "fetch", "finally",
+            "for", "function", "if", "import", "JSON", "let", "Map", "Math", "new", "null",
+            "Number", "Object", "Promise", "prototype", "return", "Set", "String", "super",
+            "switch", "this", "throw", "try", "undefined", "var", "window", "yield",
+        ],
         line_comments: &["//"],
         block: C_BLOCK,
         multi: &["`"],
@@ -104,6 +120,7 @@ pub static LANGS: &[Lang] = &[
             "Int", "Long", "Short", "Byte", "Float", "Double", "Boolean", "Char", "String", "Any", "Unit", "Nothing",
             "List", "Map", "Set", "Array",
         ],
+        builtins: &[],
         line_comments: &["//"],
         block: C_BLOCK,
         nested: true,
@@ -124,6 +141,7 @@ pub static LANGS: &[Lang] = &[
             "throws", "true", "try", "some", "any", "actor", "lazy", "weak", "final", "override", "mutating",
         ],
         types: &["Int", "UInt", "Double", "Float", "Bool", "String", "Character", "Array", "Dictionary", "Set", "Optional", "Void"],
+        builtins: &[],
         line_comments: &["//"],
         block: C_BLOCK,
         nested: true,
@@ -147,6 +165,7 @@ pub static LANGS: &[Lang] = &[
             "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize", "f16", "f32",
             "f64", "f128", "bool", "void", "type", "noreturn", "anyerror", "comptime_int", "comptime_float",
         ],
+        builtins: &[],
         line_comments: &["//"],
         quotes: "\"'",
         cap_types: true,
@@ -164,6 +183,7 @@ pub static LANGS: &[Lang] = &[
             "true", "try", "typedef", "var", "void", "while", "with", "yield",
         ],
         types: &["int", "double", "num", "bool", "String", "List", "Map", "Set", "Future", "Stream", "Object"],
+        builtins: &[],
         line_comments: &["//"],
         block: C_BLOCK,
         nested: true,
@@ -181,6 +201,7 @@ pub static LANGS: &[Lang] = &[
             "for", "in", "and", "or", "not", "true", "false", "nil", "import", "alias", "use", "require", "quote",
             "unquote", "raise", "rescue", "try", "catch", "after", "receive", "send", "spawn", "then",
         ],
+        builtins: &[],
         line_comments: &["#"],
         multi: &["\"\"\""],
         attrs: true,
@@ -197,6 +218,7 @@ pub static LANGS: &[Lang] = &[
             "isa", "where",
         ],
         types: &["Int", "Int64", "Float64", "String", "Bool", "Vector", "Matrix", "Array", "Dict", "Set", "Any", "Nothing"],
+        builtins: &[],
         line_comments: &["#"],
         block: Some(("#=", "=#")),
         nested: true,
@@ -210,6 +232,7 @@ pub static LANGS: &[Lang] = &[
         exts: &["toml"],
         files: &["Cargo.lock", "Pipfile", "poetry.lock"],
         keywords: &["true", "false", "inf", "nan"],
+        builtins: &[],
         line_comments: &["#"],
         multi: &["\"\"\"", "'''"],
         section: true,
@@ -221,6 +244,7 @@ pub static LANGS: &[Lang] = &[
         exts: &["ini", "cfg", "conf", "env", "properties", "editorconfig", "gitignore", "gitattributes", "service", "desktop", "rc"],
         files: &[".env", ".gitignore", ".gitattributes", ".editorconfig", ".gitconfig", ".npmrc", "config", "credentials"],
         keywords: &["true", "false", "yes", "no", "on", "off"],
+        builtins: &[],
         line_comments: &["#", ";"],
         section: true,
         kv: true,
@@ -234,6 +258,7 @@ pub static LANGS: &[Lang] = &[
             "from", "run", "cmd", "label", "maintainer", "expose", "env", "add", "copy", "entrypoint", "volume",
             "user", "workdir", "arg", "onbuild", "stopsignal", "healthcheck", "shell", "as",
         ],
+        builtins: &[],
         line_comments: &["#"],
         ci: true,
         ..BASE
@@ -249,6 +274,7 @@ pub static LANGS: &[Lang] = &[
             "cmake_minimum_required", "find_package", "include", "option", "message", "install", "list", "string",
             "file", "configure_file", "add_custom_command", "add_custom_target", "add_definitions", "set_target_properties",
         ],
+        builtins: &[],
         line_comments: &["#"],
         block: Some(("#[[", "]]")),
         ci: true,
@@ -261,6 +287,7 @@ pub static LANGS: &[Lang] = &[
             "resource", "variable", "output", "module", "provider", "data", "locals", "terraform", "for", "in", "if",
             "true", "false", "null", "dynamic", "backend", "required_providers",
         ],
+        builtins: &[],
         line_comments: &["#", "//"],
         block: C_BLOCK,
         quotes: "\"",
@@ -274,6 +301,7 @@ pub static LANGS: &[Lang] = &[
             "let", "in", "if", "then", "else", "with", "inherit", "rec", "import", "assert", "true", "false", "null",
             "or", "builtins",
         ],
+        builtins: &[],
         line_comments: &["#"],
         block: C_BLOCK,
         quotes: "\"",
@@ -292,6 +320,7 @@ pub static LANGS: &[Lang] = &[
             "double", "float", "int32", "int64", "uint32", "uint64", "sint32", "sint64", "fixed32", "fixed64",
             "sfixed32", "sfixed64", "bool", "string", "bytes",
         ],
+        builtins: &[],
         line_comments: &["//"],
         block: C_BLOCK,
         cap_types: true,
@@ -305,6 +334,7 @@ pub static LANGS: &[Lang] = &[
             "scalar", "schema", "extend", "directive", "implements", "true", "false", "null",
         ],
         types: &["Int", "Float", "String", "Boolean", "ID"],
+        builtins: &[],
         line_comments: &["#"],
         quotes: "\"",
         multi: &["\"\"\""],
@@ -319,6 +349,7 @@ pub static LANGS: &[Lang] = &[
             "exit", "filter", "finally", "for", "foreach", "from", "function", "if", "in", "param", "process",
             "return", "switch", "throw", "trap", "try", "until", "using", "while", "workflow",
         ],
+        builtins: &[],
         line_comments: &["#"],
         block: Some(("<#", "#>")),
         ci: true,
@@ -333,6 +364,7 @@ pub static LANGS: &[Lang] = &[
             "unlet", "set", "call", "return", "execute", "autocmd", "augroup", "command", "map", "noremap", "nnoremap",
             "inoremap", "vnoremap", "syntax", "highlight", "try", "catch", "finally", "endtry", "source",
         ],
+        builtins: &[],
         line_comments: &["\""],
         quotes: "'",
         ..BASE
@@ -356,9 +388,17 @@ pub fn by_name(name: &str) -> Option<&'static Lang> {
 pub fn completion_words(name: &str) -> Vec<&'static str> {
     let lang = by_name(name);
     let mut words: Vec<&'static str> = lang
-        .map(|lang| lang.keywords.iter().chain(lang.types.iter()).copied().collect())
+        .map(|lang| {
+            lang.keywords.iter()
+                .chain(lang.types.iter())
+                .chain(lang.builtins.iter())
+                .copied()
+                .collect()
+        })
         .unwrap_or_default();
-    let builtin_words: &[&str] = match name.to_ascii_lowercase().as_str() {
+
+    // Specific built-ins migration for Python, Rust, JS, Go, C, C++
+    let extra_builtins: &[&str] = match name.to_ascii_lowercase().as_str() {
         "python" => &[
             "abs", "all", "and", "any", "as", "assert", "async", "await", "bin", "bool",
             "break", "bytearray", "bytes", "callable", "class", "classmethod", "chr", "compile",
@@ -414,7 +454,13 @@ pub fn completion_words(name: &str) -> Vec<&'static str> {
         ],
         _ => &[],
     };
-    if builtin_words.is_empty() && lang.is_none() {
+
+    if !extra_builtins.is_empty() {
+        words.extend(extra_builtins.iter().copied());
+    }
+    
+    // Fallback for unknown languages: add a generic set of useful words.
+    if words.is_empty() && lang.is_none() {
         words.extend([
             "add", "append", "async", "await", "bool", "break", "build", "case", "catch",
             "char", "class", "close", "const", "continue", "create", "debug", "def", "delete",
@@ -429,6 +475,6 @@ pub fn completion_words(name: &str) -> Vec<&'static str> {
             "String", "Vec",
         ]);
     }
-    words.extend(builtin_words.iter().copied());
+
     words
 }
