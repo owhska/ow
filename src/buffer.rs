@@ -3,6 +3,7 @@ use crate::syntax::Highlighter;
 use ratatui::style::Style;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
@@ -744,7 +745,7 @@ impl Buffer {
     }
 
     // ------------------------------------------------------------ styling
-    pub fn line_styles(&mut self, line: usize) -> Option<Vec<Style>> {
+    pub fn line_styles(&mut self, line: usize) -> Option<Arc<[Style]>> {
         self.hl.line_styles(&self.lines, line)
     }
 

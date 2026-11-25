@@ -5,6 +5,7 @@ use crate::syntax::palette::*;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::Frame;
+use std::sync::Arc;
 use unicode_width::UnicodeWidthChar;
 
 fn bold() -> Style {
@@ -284,11 +285,12 @@ fn render_window(
             break;
         }
 
-        let line = buffer.lines[line_index].clone();
         let styles = match kind {
             BufKind::File | BufKind::GitDiff => buffer.line_styles(line_index),
-            kind => special_styles(kind, &line, buffer.meta.get(line_index)),
+            kind => special_styles(kind, &buffer.lines[line_index], buffer.meta.get(line_index))
+                .map(Arc::from),
         };
+        let line = &buffer.lines[line_index];
 
         let mut overlays: Vec<(usize, usize, Style)> = Vec::new();
         let line_length = line.chars().count();

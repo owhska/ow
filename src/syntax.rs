@@ -3,8 +3,9 @@
 //! per-line start states are cached and invalidated from the edited line.
 use crate::langs::{self, Lang};
 use ratatui::style::{Color, Modifier, Style};
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use syntect::highlighting::{
     FontStyle, HighlightIterator, HighlightState, Highlighter as SyHl, Style as SyStyle, Theme, ThemeSet,
 };
@@ -403,17 +404,29 @@ pub struct Highlighter {
     engine: Engine,
     pub name: String,
     comment: Option<&'static str>,
+    style_cache: HashMap<usize, Arc<[Style]>>,
+    style_cache_order: VecDeque<usize>,
+    cached_style_chars: usize,
 }
 
 const MAX_LINE: usize = 4000;
 const MAX_LINES: usize = 300_000;
+const MAX_CACHED_STYLE_LINES: usize = 2048;
+const MAX_CACHED_STYLE_CHARS: usize = 65_536;
 /// Lines parsed sequentially before we give up and restart near the target.
 const JUMP_LIMIT: usize = 1500;
 const RESTART_CONTEXT: usize = 200;
 
 impl Highlighter {
     pub fn plain() -> Self {
-        Highlighter { engine: Engine::Plain, name: "Text".into(), comment: None }
+        Highlighter {
+            engine: Engine::Plain,
+            name: "Text".into(),
+            comment: None,
+            style_cache: HashMap::new(),
+            style_cache_order: VecDeque::new(),
+            cached_style_chars: 0,
+        }
     }
 
     fn from_syntect(syntax: &'static SyntaxReference) -> Self {
@@ -423,6 +436,9 @@ impl Highlighter {
             comment: syntect_comment(&syntax.name),
             name: syntax.name.clone(),
             engine: Engine::Syntect { syntax, hl, states: vec![st], base: 0 },
+            style_cache: HashMap::new(),
+            style_cache_order: VecDeque::new(),
+            cached_style_chars: 0,
         }
     }
 
@@ -431,6 +447,9 @@ impl Highlighter {
             name: lang.name.to_string(),
             comment: lang.line_comments.first().copied(),
             engine: Engine::Extra { lang, states: vec![St::Normal], base: 0 },
+            style_cache: HashMap::new(),
+            style_cache_order: VecDeque::new(),
+            cached_style_chars: 0,
         }
     }
 
@@ -483,6 +502,10 @@ impl Highlighter {
     }
 
     pub fn invalidate(&mut self, from_line: usize) {
+        self.style_cache.retain(|line, _| *line < from_line);
+        self.style_cache_order.retain(|line| *line < from_line);
+        self.cached_style_chars = self.style_cache.values().map(|styles| styles.len()).sum();
+
         match &mut self.engine {
             Engine::Plain => {}
             Engine::Syntect { syntax, hl, states, base } => {
@@ -510,12 +533,17 @@ impl Highlighter {
     /// cached region (e.g. jumping to the end of a huge file) parsing restarts
     /// a short distance before it instead of from line 0, trading perfect
     /// accuracy for responsiveness.
-    pub fn line_styles(&mut self, lines: &[String], idx: usize) -> Option<Vec<Style>> {
-        if lines.len() > MAX_LINES || lines.get(idx)?.len() > MAX_LINE {
+    pub fn line_styles(&mut self, lines: &[String], idx: usize) -> Option<Arc<[Style]>> {
+        let line = lines.get(idx)?;
+        if lines.len() > MAX_LINES || line.len() > MAX_LINE {
             return None;
         }
-        match &mut self.engine {
-            Engine::Plain => None,
+        if let Some(styles) = self.style_cache.get(&idx) {
+            return Some(Arc::clone(styles));
+        }
+
+        let styles = match &mut self.engine {
+            Engine::Plain => return None,
             Engine::Syntect { syntax, hl, states, base } => {
                 if states.is_empty() || idx < *base {
                     *base = 0;
@@ -532,14 +560,14 @@ impl Highlighter {
                     states.push(st);
                 }
                 let mut st = states[idx - *base].clone();
-                Some(run_syntect(&mut st, hl, &lines[idx]))
+                run_syntect(&mut st, hl, line)
             }
             Engine::Extra { lang, states, base } => {
                 if states.is_empty() || idx < *base {
                     *base = 0;
                     *states = vec![St::Normal];
                 }
-                if idx - *base >= states.len() && idx - (*base + states.len() - 1) > JUMP_LIMIT * 20 {
+                if idx - *base >= states.len() && idx - (*base + states.len() - 1) > JUMP_LIMIT {
                     *base = idx.saturating_sub(RESTART_CONTEXT);
                     *states = vec![St::Normal];
                 }
@@ -548,9 +576,29 @@ impl Highlighter {
                     let (_, ns) = tokenize(lang, &lines[*base + k], states[k]);
                     states.push(ns);
                 }
-                let (toks, _) = tokenize(lang, &lines[idx], states[idx - *base]);
-                Some(toks.into_iter().map(tok_style).collect())
+                let (toks, _) = tokenize(lang, line, states[idx - *base]);
+                toks.into_iter().map(tok_style).collect()
             }
+        };
+
+        if styles.len() <= MAX_CACHED_STYLE_CHARS {
+            while self.style_cache.len() >= MAX_CACHED_STYLE_LINES
+                || self.cached_style_chars + styles.len() > MAX_CACHED_STYLE_CHARS
+            {
+                let Some(expired) = self.style_cache_order.pop_front() else {
+                    break;
+                };
+                if let Some(expired_styles) = self.style_cache.remove(&expired) {
+                    self.cached_style_chars -= expired_styles.len();
+                }
+            }
+            self.cached_style_chars += styles.len();
+            let styles: Arc<[Style]> = styles.into();
+            self.style_cache.insert(idx, Arc::clone(&styles));
+            self.style_cache_order.push_back(idx);
+            Some(styles)
+        } else {
+            Some(styles.into())
         }
     }
 }
@@ -670,6 +718,51 @@ mod tests {
         let lines = vec!["fn main() {".to_string(), "    let x = 1;".to_string()];
         let s = h.line_styles(&lines, 1).unwrap();
         assert_eq!(s.len(), lines[1].chars().count());
+    }
+
+    #[test]
+    fn line_styles_are_cached_and_invalidated_after_edits() {
+        let mut h = Highlighter::detect(Some(Path::new("a.rs")), "");
+        let mut lines = vec!["fn main() {}".to_string()];
+
+        let first = h.line_styles(&lines, 0).unwrap();
+        let cached = h.line_styles(&lines, 0).unwrap();
+        assert!(Arc::ptr_eq(&first, &cached));
+
+        lines[0] = "// comment".to_string();
+        h.invalidate(0);
+        let updated = h.line_styles(&lines, 0).unwrap();
+        assert!(!Arc::ptr_eq(&first, &updated));
+        assert_ne!(first[0], updated[0]);
+    }
+
+    #[test]
+    fn style_cache_is_bounded() {
+        let mut h = Highlighter::detect(Some(Path::new("a.ts")), "");
+        let lines = (0..MAX_CACHED_STYLE_LINES + 1)
+            .map(|line| format!("const value{line} = {line};"))
+            .collect::<Vec<_>>();
+
+        for line in 0..lines.len() {
+            h.line_styles(&lines, line).unwrap();
+        }
+
+        assert_eq!(h.style_cache.len(), MAX_CACHED_STYLE_LINES);
+        assert!(h.cached_style_chars <= MAX_CACHED_STYLE_CHARS);
+    }
+
+    #[test]
+    fn extra_language_jumps_restart_near_the_target() {
+        let mut h = Highlighter::detect(Some(Path::new("a.ts")), "");
+        let lines = vec!["const value = 1;".to_string(); 20_000];
+
+        h.line_styles(&lines, 19_999).unwrap();
+
+        let Engine::Extra { base, states, .. } = &h.engine else {
+            panic!("TypeScript should use the built-in tokenizer");
+        };
+        assert_eq!(*base, 19_999 - RESTART_CONTEXT);
+        assert_eq!(states.len(), RESTART_CONTEXT + 1);
     }
 
     #[test]
