@@ -3017,6 +3017,12 @@ impl Editor {
                 self.finish_isearch(&s);
                 return;
             }
+            "ESC" | "C-[" => {
+                self.finish_isearch(&s);
+                self.search_highlight = None;
+                self.normal_key(key);
+                return;
+            }
             "C-s" | "C-r" => {
                 s.forward = key.name == "C-s";
                 if s.query.is_empty() {

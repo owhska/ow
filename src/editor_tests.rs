@@ -294,6 +294,17 @@ fn leader_search_keeps_match_highlight_while_navigating() {
 }
 
 #[test]
+fn leader_search_escape_clears_match_highlight() {
+    let mut e = Editor::new();
+    e.buf_mut().set_text("word one");
+
+    keys(&mut e, "SPC s w o r d ESC");
+
+    assert_eq!(e.search_highlight, None);
+    assert_eq!(e.buf().cursor, Pos::new(0, 4));
+}
+
+#[test]
 fn meta_q_quits_like_c_x_c_c_and_prompts_for_modified_files() {
     let mut plain = Editor::new();
     keys(&mut plain, "C-x C-c");
