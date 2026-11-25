@@ -4,6 +4,9 @@ impl Editor {
     pub fn handle_vim_key(&mut self, key: Key) -> bool {
         if self.buf().kind == BufKind::Dired {
             let n = key.name.as_str();
+            if n == ":" {
+                return self.handle_vim_normal(key);
+            }
             if n == "SPC" || self.vim_pending.starts_with("SPC") {
                 return self.handle_vim_normal(key);
             }
@@ -1042,6 +1045,12 @@ impl Editor {
                     return true;
                 }
 
+                "SPC w c h" | "SPC w c j" | "SPC w c k" | "SPC w c l" => {
+                    self.vim_pending.clear();
+                    self.move_current_window(n.chars().next().unwrap_or(' '));
+                    return true;
+                }
+
                 // <leader>wh, <leader>wl, <leader>wj, <leader>wk: window navigation
                 "SPC w h" | "SPC w l" | "SPC w j" | "SPC w k" => {
                     self.vim_pending.clear();
@@ -1119,7 +1128,7 @@ impl Editor {
                 }
 
                 // Prefixes that wait for the next key.
-                "SPC w" | "SPC r" | "SPC g" | "SPC p" | "SPC b" | "SPC l" => {
+                "SPC w" | "SPC w c" | "SPC r" | "SPC g" | "SPC p" | "SPC b" | "SPC l" => {
                     self.vim_pending = chord;
                     self.say(format!("{} -", self.vim_pending));
                     return true;

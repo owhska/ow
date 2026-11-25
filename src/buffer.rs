@@ -40,6 +40,7 @@ pub enum BufKind {
     GitDiff,
     GitBlame,
     Grep,
+    Run,
     Dired,
     List,
     Help,

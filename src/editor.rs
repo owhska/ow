@@ -5,8 +5,10 @@ use crate::keys::{self, Key};
 use crate::syntax::Highlighter;
 use ratatui::crossterm::event::KeyEvent;
 use std::collections::{HashMap, HashSet};
-use std::io;
+use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::process::ExitStatus;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthChar;
 
@@ -21,6 +23,7 @@ pub enum PKind {
     Goto,
     Commit { amend: bool },
     Checkout,
+    Run,
     ProjFile,
     ProjGrep,
     QrFrom,
@@ -31,6 +34,11 @@ pub enum PKind {
     DiredCreate(PathBuf),
     DiredRename { dir: PathBuf, source: PathBuf },
     WorkspaceDirectory,
+}
+
+enum RunEvent {
+    Output(String),
+    Finished(Result<ExitStatus, String>),
 }
 
 pub struct Prompt {
@@ -309,6 +317,55 @@ impl WindowTree {
         }
     }
 
+    fn find_leaf_path(&self, target_id: usize, path: &mut Vec<bool>) -> bool {
+        match self {
+            WindowTree::Leaf(id) => *id == target_id,
+            WindowTree::Split { first, second, .. } => {
+                path.push(false);
+                if first.find_leaf_path(target_id, path) {
+                    return true;
+                }
+                path.pop();
+                path.push(true);
+                if second.find_leaf_path(target_id, path) {
+                    return true;
+                }
+                path.pop();
+                false
+            }
+        }
+    }
+
+    fn set_leaf_at_path(&mut self, path: &[bool], id: usize) -> bool {
+        match self {
+            WindowTree::Leaf(current) if path.is_empty() => {
+                *current = id;
+                true
+            }
+            WindowTree::Split { first, second, .. } => match path.split_first() {
+                Some((true, rest)) => second.set_leaf_at_path(rest, id),
+                Some((false, rest)) => first.set_leaf_at_path(rest, id),
+                None => false,
+            },
+            WindowTree::Leaf(_) => false,
+        }
+    }
+
+    pub fn swap_leaf_positions(&mut self, first_id: usize, second_id: usize) -> bool {
+        if first_id == second_id {
+            return false;
+        }
+        let mut first_path = Vec::new();
+        let mut second_path = Vec::new();
+        if !self.find_leaf_path(first_id, &mut first_path)
+            || !self.find_leaf_path(second_id, &mut second_path)
+        {
+            return false;
+        }
+        self.set_leaf_at_path(&first_path, second_id)
+            && self.set_leaf_at_path(&second_path, first_id)
+    }
+
     pub fn resize_split(&mut self, target_id: usize, dir: SplitDir, delta: f32) -> bool {
         match self {
             WindowTree::Leaf(_) => false,
@@ -504,6 +561,55 @@ impl Completion {
     }
 }
 
+fn directional_window_neighbor(
+    rects: &[(usize, ratatui::layout::Rect)],
+    current_id: usize,
+    direction: char,
+) -> Option<usize> {
+    let current = rects.iter().find(|(id, _)| *id == current_id)?.1;
+    let current_left = u32::from(current.x);
+    let current_top = u32::from(current.y);
+    let current_right = current_left + u32::from(current.width);
+    let current_bottom = current_top + u32::from(current.height);
+    let current_center_x = current_left + u32::from(current.width) / 2;
+    let current_center_y = current_top + u32::from(current.height) / 2;
+
+    rects
+        .iter()
+        .filter_map(|(id, candidate)| {
+            if *id == current_id {
+                return None;
+            }
+            let left = u32::from(candidate.x);
+            let top = u32::from(candidate.y);
+            let right = left + u32::from(candidate.width);
+            let bottom = top + u32::from(candidate.height);
+            let center_x = left + u32::from(candidate.width) / 2;
+            let center_y = top + u32::from(candidate.height) / 2;
+            let overlaps_horizontally = left < current_right && current_left < right;
+            let overlaps_vertically = top < current_bottom && current_top < bottom;
+
+            let (distance, alignment) = match direction {
+                'h' if overlaps_vertically && right <= current_left + 1 => {
+                    (current_left.saturating_sub(right), center_y.abs_diff(current_center_y))
+                }
+                'l' if overlaps_vertically && current_right <= left + 1 => {
+                    (left.saturating_sub(current_right), center_y.abs_diff(current_center_y))
+                }
+                'k' if overlaps_horizontally && bottom <= current_top + 1 => {
+                    (current_top.saturating_sub(bottom), center_x.abs_diff(current_center_x))
+                }
+                'j' if overlaps_horizontally && current_bottom <= top + 1 => {
+                    (top.saturating_sub(current_bottom), center_x.abs_diff(current_center_x))
+                }
+                _ => return None,
+            };
+            Some(((distance, alignment), *id))
+        })
+        .min_by_key(|(score, _)| *score)
+        .map(|(_, id)| id)
+}
+
 // ----------------------------------------------------------------- editor
 pub struct Editor {
     pub bufs: Vec<Buffer>,
@@ -563,6 +669,12 @@ pub struct Editor {
     pub bookmarks: Vec<PathBuf>,
     pub search_history: Vec<String>,
     pub command_history: Vec<String>,
+    pub run_command: String,
+    run_rx: Option<Receiver<RunEvent>>,
+    run_dir: Option<PathBuf>,
+    run_started: Option<Instant>,
+    run_elapsed_tenths: u64,
+    run_output: Vec<String>,
     last_cmd: String,
     prev_kill: bool,
     pub this_kill: bool,
@@ -661,6 +773,12 @@ impl Editor {
             bookmarks: Vec::new(),
             search_history: Vec::new(),
             command_history: Vec::new(),
+            run_command: String::new(),
+            run_rx: None,
+            run_dir: None,
+            run_started: None,
+            run_elapsed_tenths: 0,
+            run_output: Vec::new(),
             last_cmd: String::new(),
             prev_kill: false,
             this_kill: false,
@@ -979,6 +1097,35 @@ impl Editor {
 
     pub fn split_window_right(&mut self) {
         self.split_window(SplitDir::Vertical);
+    }
+
+    pub fn move_current_window(&mut self, direction: char) {
+        self.sync_active_win_from_buf();
+        let current_id = self.active_win_id;
+        let tree_width = self.project_tree_width();
+        let window_x = if tree_width > 0 {
+            tree_width.saturating_add(1)
+        } else {
+            0
+        };
+        let area = ratatui::layout::Rect::new(
+            window_x,
+            0,
+            self.screen_w.saturating_sub(window_x),
+            self.screen_h.saturating_sub(1),
+        );
+        let mut rects = Vec::new();
+        let mut separators = Vec::new();
+        self.win_tree.compute_rects(area, &mut rects, &mut separators);
+        let Some(target_id) = directional_window_neighbor(&rects, current_id, direction) else {
+            self.say("No window in that direction");
+            return;
+        };
+        if self.win_tree.swap_leaf_positions(current_id, target_id) {
+            self.say("Moved window");
+        } else {
+            self.say("Could not move window");
+        }
     }
 
     pub fn delete_other_windows(&mut self) {
@@ -1605,9 +1752,80 @@ impl Editor {
         b.git_marks_version = version;
     }
 
+    fn poll_run(&mut self) -> bool {
+        let mut redraw = false;
+        loop {
+            let event = match self.run_rx.as_ref().map(Receiver::try_recv) {
+                Some(Ok(event)) => event,
+                Some(Err(TryRecvError::Empty)) | None => break,
+                Some(Err(TryRecvError::Disconnected)) => {
+                    self.finish_current_run(Err("command process ended unexpectedly".to_string()));
+                    return true;
+                }
+            };
+            match event {
+                RunEvent::Output(line) => {
+                    self.append_run_output(line);
+                    redraw = true;
+                }
+                RunEvent::Finished(result) => {
+                    self.finish_current_run(result);
+                    return true;
+                }
+            }
+        }
+        redraw
+    }
+
+    fn append_run_output(&mut self, line: String) {
+        let root = self.run_dir.clone().unwrap_or_else(|| self.cwd.clone());
+        let meta = command_location(&line, &root);
+        self.run_output.push(line.clone());
+        let Some(index) = self.bufs.iter().position(|buffer| buffer.kind == BufKind::Run) else {
+            return;
+        };
+        let buffer = &mut self.bufs[index];
+        buffer.lines.push(line);
+        buffer.meta.push(meta);
+        let cursor = Pos::new(buffer.lines.len().saturating_sub(1), 0);
+        buffer.cursor = cursor;
+        for window in self.windows.iter_mut().filter(|window| window.buf_idx == index) {
+            window.cursor = cursor;
+        }
+    }
+
+    fn finish_current_run(&mut self, result: Result<ExitStatus, String>) {
+        self.run_rx = None;
+        let root = self.run_dir.take().unwrap_or_else(|| self.cwd.clone());
+        let command = self.run_command.clone();
+        let output = std::mem::take(&mut self.run_output);
+        let elapsed = self.run_started.take().map(|start| start.elapsed()).unwrap_or_default();
+        self.finish_run(result, &output, &root, &command, elapsed);
+    }
+
+    fn update_run_elapsed(&mut self) -> bool {
+        let Some(started) = self.run_started else { return false };
+        let elapsed_tenths = (started.elapsed().as_millis() / 100) as u64;
+        if elapsed_tenths == self.run_elapsed_tenths {
+            return false;
+        }
+        self.run_elapsed_tenths = elapsed_tenths;
+
+        let Some(index) = self.bufs.iter().position(|buffer| buffer.kind == BufKind::Run) else {
+            return false;
+        };
+        if let Some(line) = self.bufs[index].lines.get_mut(2) {
+            *line = format!("Command running... ({:.1}s)", elapsed_tenths as f64 / 10.0);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Idle work. Returns true when the screen needs a redraw.
     pub fn tick(&mut self) -> bool {
-        let mut redraw = false;
+        let mut redraw = self.poll_run();
+        redraw |= self.update_run_elapsed();
         let b = self.buf();
         if b.kind == BufKind::File && b.path.is_some() && b.git_marks_version != b.version {
             self.refresh_marks();
@@ -2217,7 +2435,9 @@ impl Editor {
                     self.last_click = Some((now, target_win_id, line));
                 }
             }
-            MouseEventKind::Down(MouseButton::Left) if self.buf().kind == BufKind::Grep => {
+            MouseEventKind::Down(MouseButton::Left)
+                if matches!(self.buf().kind, BufKind::Grep | BufKind::Run) =>
+            {
                 let text_h = (rect.height as usize).saturating_sub(1);
                 let click_rel_y = (ev.row as usize).saturating_sub(rect.y as usize);
                 if click_rel_y >= text_h {
@@ -2641,6 +2861,7 @@ impl Editor {
             }
             PKind::Commit { amend } => self.git_commit_now(value.trim(), amend),
             PKind::Checkout => self.git_checkout_now(value.trim()),
+            PKind::Run => self.run_now(&value),
             PKind::ProjFile => self.project_open(&value),
             PKind::ProjGrep => self.project_grep_now(&value),
             PKind::QrFrom => {
@@ -2922,6 +3143,10 @@ impl Editor {
         let kind = self.buf().kind;
         if kind == BufKind::File {
             return false;
+        }
+        if kind == BufKind::Run && key == "q" && self.windows.len() > 1 {
+            self.delete_window();
+            return true;
         }
         match key {
             "q" => {

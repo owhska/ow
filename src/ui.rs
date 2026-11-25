@@ -77,6 +77,53 @@ fn special_styles(
             }
             _ => paint(0, length, bold()),
         },
+        BufKind::Run => match meta {
+            Some(LineMeta::Grep { path, line: line_number, match_start, match_end }) => {
+                let path_length = path.chars().count();
+
+                paint(0, path_length, fg(c(TYPE)));
+                let snippet_start = path_length + 1 + line_number.to_string().len() + 2;
+                paint(path_length, snippet_start, fg(c(INFO)));
+                paint(
+                    snippet_start + match_start,
+                    snippet_start + match_end,
+                    Style::default().bg(c(WARN)).fg(Color::Black),
+                );
+            }
+            _ if line.starts_with("$ ") => {
+                paint(0, 2, fg(c(DIM)));
+                paint(2, length, fg(c(TYPE)).add_modifier(Modifier::BOLD));
+            }
+            _ if line.starts_with("Directory:") => {
+                paint(0, "Directory:".len(), fg(c(TYPE)).add_modifier(Modifier::BOLD));
+                paint("Directory:".len(), length, fg(c(DIM)));
+            }
+            _ if line.starts_with("Command running...") => {
+                paint(0, length, fg(c(INFO)).add_modifier(Modifier::BOLD));
+            }
+            _ if line.starts_with("Process exited with code ") => {
+                let successful = line
+                    .strip_prefix("Process exited with code ")
+                    .and_then(|code| code.parse::<i32>().ok())
+                    == Some(0);
+                let color = if successful { c(INFO) } else { c(ERROR) };
+                paint(0, length, fg(color).add_modifier(Modifier::BOLD));
+            }
+            _ if line.starts_with("Process terminated") || line.starts_with("Could not start command:") => {
+                paint(0, length, fg(c(ERROR)).add_modifier(Modifier::BOLD));
+            }
+            _ if line.starts_with("Command finished in ") => {
+                paint(0, length, fg(c(DIM)));
+            }
+            _ => {
+                let lower = line.to_lowercase();
+                if lower.contains("error") || lower.contains("fatal") {
+                    paint(0, length, fg(c(ERROR)));
+                } else if lower.contains("warning") {
+                    paint(0, length, fg(c(WARN)));
+                }
+            }
+        },
         BufKind::GitBlame => {
             paint(0, 7, fg(c(WARN)));
             paint(8, 22, fg(c(INFO)));
@@ -1048,5 +1095,28 @@ mod tests {
 
         assert_eq!(styles[snippet_start + 4].bg, Some(c(WARN)));
         assert_ne!(styles[snippet_start + 3].bg, Some(c(WARN)));
+    }
+
+    #[test]
+    fn run_output_colors_command_errors_and_exit_status() {
+        let command = "$ cargo test";
+        let command_styles = special_styles(BufKind::Run, command, None).unwrap();
+        assert_eq!(command_styles[2].fg, Some(c(TYPE)));
+
+        let error = "error: build failed";
+        let error_styles = special_styles(BufKind::Run, error, None).unwrap();
+        assert_eq!(error_styles[0].fg, Some(c(ERROR)));
+
+        let warning = "warning: unused variable";
+        let warning_styles = special_styles(BufKind::Run, warning, None).unwrap();
+        assert_eq!(warning_styles[0].fg, Some(c(WARN)));
+
+        let success = "Process exited with code 0";
+        let success_styles = special_styles(BufKind::Run, success, None).unwrap();
+        assert_eq!(success_styles[0].fg, Some(c(INFO)));
+
+        let failure = "Process exited with code 1";
+        let failure_styles = special_styles(BufKind::Run, failure, None).unwrap();
+        assert_eq!(failure_styles[0].fg, Some(c(ERROR)));
     }
 }

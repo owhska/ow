@@ -722,8 +722,14 @@ impl Editor {
     }
 
     fn next_error(&mut self, down: bool) {
-        let Some(gi) = self.bufs.iter().position(|b| b.kind == BufKind::Grep) else {
-            self.say("No grep results (C-x p g)");
+        let gi = self
+            .bufs
+            .get(self.cur)
+            .filter(|buffer| matches!(buffer.kind, BufKind::Grep | BufKind::Run))
+            .map(|_| self.cur)
+            .or_else(|| self.bufs.iter().rposition(|buffer| matches!(buffer.kind, BufKind::Grep | BufKind::Run)));
+        let Some(gi) = gi else {
+            self.say("No grep or compilation results");
             return;
         };
         let g = &self.bufs[gi];

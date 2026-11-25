@@ -698,11 +698,180 @@ impl Editor {
             self.command_history = std::fs::read_to_string(crate::editor::ow_config_dir().join("command-history"))
                 .map(|s| s.lines().map(|line| line.to_string()).collect()).unwrap_or_default();
         }
-        let mut names = self.command_history.clone();
-        for (name, _) in COMMANDS {
-            if !names.iter().any(|item| item.as_str() == *name) { names.push((*name).to_string()); }
+        let mut names = Vec::new();
+        for name in self
+            .command_history
+            .iter()
+            .map(String::as_str)
+            .chain(COMMANDS.iter().map(|(name, _)| *name))
+        {
+            if is_m_x_command(name) && !names.iter().any(|item| item == name) {
+                names.push(name.to_string());
+            }
         }
         self.start_prompt(Prompt::new("M-x ", PKind::Command, Some(names)));
+    }
+
+    fn run_cmd(&mut self) {
+        if self.run_rx.is_some() {
+            self.say("A command is already running");
+            return;
+        }
+        self.start_prompt(
+            Prompt::new("Run command: ", PKind::Run, None).with_input(&self.run_command),
+        );
+    }
+
+    fn focus_run_window(&mut self) {
+        let run_window = self
+            .windows
+            .iter()
+            .find(|window| self.bufs.get(window.buf_idx).is_some_and(|buffer| buffer.kind == BufKind::Run))
+            .map(|window| window.id);
+        if let Some(window) = run_window {
+            self.set_active_window(window);
+        } else if self.buf().kind != BufKind::Run {
+            self.split_window_below();
+            self.set_active_window(self.next_win_id - 1);
+        }
+    }
+
+    fn run_now(&mut self, command: &str) {
+        let command = command.trim();
+        if command.is_empty() {
+            self.say("No command to run");
+            return;
+        }
+        if self.run_rx.is_some() {
+            self.say("A command is already running");
+            return;
+        }
+
+        self.run_command = command.to_string();
+        let root = if self.buf().kind == BufKind::Dired {
+            self.buf().path.clone().unwrap_or_else(|| self.cwd.clone())
+        } else {
+            self.proj_root
+                .clone()
+                .or_else(|| self.buf().path.as_ref().and_then(|path| path.parent()).map(Path::to_path_buf))
+                .unwrap_or_else(|| self.cwd.clone())
+        };
+        let command = self.run_command.clone();
+        let working_dir = root.clone();
+        self.focus_run_window();
+        let initial_text = format!(
+            "$ {command}\nDirectory: {}\nCommand running... (0.0s)\n",
+            root.display()
+        );
+        self.open_special(
+            "*run*",
+            BufKind::Run,
+            &initial_text,
+            vec![LineMeta::None, LineMeta::None, LineMeta::None],
+            false,
+        );
+        self.run_started = Some(Instant::now());
+        self.run_elapsed_tenths = 0;
+        self.run_output.clear();
+        self.grep_fresh = false;
+
+        let (sender, receiver) = mpsc::channel();
+        self.run_rx = Some(receiver);
+        self.run_dir = Some(root);
+        std::thread::spawn(move || {
+            let result = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(command)
+                .current_dir(working_dir)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .map_err(|error| error.to_string());
+            match result {
+                Err(error) => {
+                    let _ = sender.send(RunEvent::Finished(Err(error)));
+                }
+                Ok(mut child) => {
+                    let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
+                        let _ = child.kill();
+                        let _ = sender.send(RunEvent::Finished(Err(
+                            "could not capture command output".to_string(),
+                        )));
+                        return;
+                    };
+                    let stdout_sender = sender.clone();
+                    let stdout_reader = std::thread::spawn(move || {
+                        forward_command_output(stdout, stdout_sender);
+                    });
+                    let stderr_sender = sender.clone();
+                    let stderr_reader = std::thread::spawn(move || {
+                        forward_command_output(stderr, stderr_sender);
+                    });
+                    let result = child.wait().map_err(|error| error.to_string());
+                    let stdout_result = stdout_reader.join();
+                    let stderr_result = stderr_reader.join();
+                    if stdout_result.is_err() || stderr_result.is_err() {
+                        let _ = sender.send(RunEvent::Output(
+                            "Command output reader stopped unexpectedly".to_string(),
+                        ));
+                    }
+                    let _ = sender.send(RunEvent::Finished(result));
+                }
+            }
+        });
+        self.say(format!("Running: {}", self.run_command));
+    }
+
+    fn finish_run(
+        &mut self,
+        result: Result<std::process::ExitStatus, String>,
+        output: &[String],
+        root: &Path,
+        command: &str,
+        elapsed: Duration,
+    ) {
+        let status = match result {
+            Ok(status) => status
+                .code()
+                .map(|code| format!("Process exited with code {code}"))
+                .unwrap_or_else(|| "Process terminated by signal".to_string()),
+            Err(error) => format!("Could not start command: {error}"),
+        };
+        let elapsed_text = format!("Command finished in {:.1}s", elapsed.as_secs_f64());
+        let mut text = format!("$ {command}\nDirectory: {}\n\n", root.display());
+        let mut meta = vec![LineMeta::None, LineMeta::None, LineMeta::None];
+        for line in output {
+            text.push_str(line);
+            text.push('\n');
+            meta.push(command_location(line, root));
+        }
+        text.push('\n');
+        meta.push(LineMeta::None);
+        text.push_str(&status);
+        text.push('\n');
+        meta.push(LineMeta::None);
+        text.push_str(&elapsed_text);
+        text.push('\n');
+        meta.push(LineMeta::None);
+
+        if let Some(index) = self.bufs.iter().position(|buffer| {
+            buffer.name == "*run*" && buffer.kind == BufKind::Run
+        }) {
+            self.bufs[index].set_special(&text, meta);
+            let line = self.bufs[index].meta.iter().position(|item| matches!(item, LineMeta::Grep { .. }));
+            let cursor = Pos::new(line.unwrap_or(0), 0);
+            self.bufs[index].cursor = cursor;
+            let top = self.bufs[index].top;
+            for window in self.windows.iter_mut().filter(|window| window.buf_idx == index) {
+                window.cursor = cursor;
+                window.top = top;
+            }
+            self.grep_fresh = line.is_some();
+        } else {
+            self.say(format!("Command finished in {:.1}s ({status})", elapsed.as_secs_f64()));
+            return;
+        }
+        self.say(format!("Command finished in {:.1}s ({status})", elapsed.as_secs_f64()));
     }
 
     fn universal_argument(&mut self) {
@@ -796,6 +965,7 @@ impl Editor {
         t.push_str("  SPC w q             close window (or quit if last)\n");
         t.push_str("  SPC w v / SPC w s   vertical / horizontal split\n");
         t.push_str("  SPC w h/j/k/l       switch window\n");
+        t.push_str("  SPC w c h/j/k/l     move window left/down/up/right\n");
         t.push_str("  SPC <arrows>        resize window\n");
         t.push_str("  SPC r r             replace word under cursor\n\n");
 
@@ -822,7 +992,7 @@ impl Editor {
         }
         t.push_str("\nOther commands (M-x name):\n\n");
         for (c, _) in COMMANDS {
-            if !by_cmd.iter().any(|e| e.0 == *c) {
+            if is_m_x_command(c) && !by_cmd.iter().any(|e| e.0 == *c) {
                 t.push_str(&format!("  {c}\n"));
             }
         }
@@ -871,6 +1041,86 @@ impl Editor {
 
     fn set_language_cmd(&mut self) {
         self.start_prompt(Prompt::new("Language: ", PKind::SetLang, Some(Highlighter::list_names())));
+    }
+}
+
+const M_X_HIDDEN: &[&str] = &[
+    "self-insert-command",
+    "forward-char",
+    "backward-char",
+    "next-line",
+    "previous-line",
+    "beginning-of-line",
+    "end-of-line",
+    "forward-word",
+    "backward-word",
+    "beginning-of-buffer",
+    "end-of-buffer",
+    "scroll-up-command",
+    "scroll-down-command",
+    "back-to-indentation",
+    "forward-paragraph",
+    "backward-paragraph",
+    "execute-extended-command",
+    "universal-argument",
+];
+
+fn is_m_x_command(name: &str) -> bool {
+    !M_X_HIDDEN.contains(&name) && COMMANDS.iter().any(|(command, _)| *command == name)
+}
+
+fn command_location(line: &str, root: &Path) -> LineMeta {
+    static LOCATION: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let location = LOCATION.get_or_init(|| {
+        regex::Regex::new(r"^\s*(?:-->\s*)?(.+?):(\d+)(?::\d+)?(?::|$)")
+            .expect("valid compilation location pattern")
+    });
+    let Some(captures) = location.captures(line) else { return LineMeta::None };
+    let Some(path) = captures.get(1).map(|capture| PathBuf::from(capture.as_str())) else {
+        return LineMeta::None;
+    };
+    let Some(line_number) = captures.get(2).and_then(|capture| capture.as_str().parse::<usize>().ok()) else {
+        return LineMeta::None;
+    };
+    let path = if path.is_absolute() { path } else { root.join(path) };
+    if !path.is_file() {
+        return LineMeta::None;
+    }
+
+    LineMeta::Grep {
+        path: path.to_string_lossy().into_owned(),
+        line: line_number,
+        match_start: 0,
+        match_end: 0,
+    }
+}
+
+fn forward_command_output<R: std::io::Read + Send + 'static>(
+    reader: R,
+    sender: std::sync::mpsc::Sender<RunEvent>,
+) {
+    let mut reader = BufReader::new(reader);
+    loop {
+        let mut line = Vec::new();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) => return,
+            Ok(_) => {
+                if line.last() == Some(&b'\n') {
+                    line.pop();
+                }
+                if line.last() == Some(&b'\r') {
+                    line.pop();
+                }
+                let line = String::from_utf8_lossy(&line).into_owned();
+                if sender.send(RunEvent::Output(line)).is_err() {
+                    return;
+                }
+            }
+            Err(error) => {
+                let _ = sender.send(RunEvent::Output(format!("Command output read error: {error}")));
+                return;
+            }
+        }
     }
 }
 
@@ -933,6 +1183,7 @@ pub static COMMANDS: &[(&str, Cmd)] = &[
     ("isearch-backward", |e| e.isearch_start(false)),
     ("query-replace", |e| e.start_prompt(Prompt::new("Query replace: ", PKind::QrFrom, None))),
     ("find-file", |e| e.find_file_cmd()),
+    ("run", |e| e.run_cmd()),
     ("save-buffer", |e| e.save_cmd()),
     ("write-file", |e| e.write_file_cmd()),
     ("save-some-buffers", |e| e.save_some()),

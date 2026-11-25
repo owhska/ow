@@ -687,6 +687,54 @@ fn vim_leader_keybindings() {
 }
 
 #[test]
+fn leader_window_move_swaps_the_current_pane_position() {
+    let dir = tmpdir("window-move");
+    let left_file = dir.join("left.txt");
+    let right_file = dir.join("right.txt");
+    std::fs::write(&left_file, "left\n").unwrap();
+    std::fs::write(&right_file, "right\n").unwrap();
+
+    let mut vertical = editor_in(&dir);
+    vertical.vim_mode = VimMode::Normal;
+    let left_buffer = vertical.open_path(&left_file).unwrap();
+    vertical.switch_to(left_buffer);
+    vertical.split_window_right();
+    let moving_id = vertical.active_win_id;
+    let other_id = vertical.windows.iter().find(|window| window.id != moving_id).unwrap().id;
+    let right_buffer = vertical.open_path(&right_file).unwrap();
+    vertical.switch_to(right_buffer);
+
+    assert_eq!(vertical.win_tree.leaves(), vec![moving_id, other_id]);
+    keys(&mut vertical, "SPC w c l");
+    assert_eq!(vertical.win_tree.leaves(), vec![other_id, moving_id]);
+    assert_eq!(vertical.active_win_id, moving_id);
+    assert_eq!(
+        vertical.windows.iter().find(|window| window.id == moving_id).unwrap().buf_idx,
+        right_buffer
+    );
+    keys(&mut vertical, "SPC w c h");
+    assert_eq!(vertical.win_tree.leaves(), vec![moving_id, other_id]);
+    keys(&mut vertical, "SPC w c h");
+    assert_eq!(vertical.win_tree.leaves(), vec![moving_id, other_id]);
+
+    let mut horizontal = editor_in(&dir);
+    horizontal.vim_mode = VimMode::Normal;
+    let buffer = horizontal.open_path(&left_file).unwrap();
+    horizontal.switch_to(buffer);
+    horizontal.split_window_below();
+    let top_id = horizontal.active_win_id;
+    let bottom_id = horizontal.windows.iter().find(|window| window.id != top_id).unwrap().id;
+    keys(&mut horizontal, "SPC w c j");
+    assert_eq!(horizontal.win_tree.leaves(), vec![bottom_id, top_id]);
+    keys(&mut horizontal, "SPC w c k");
+    assert_eq!(horizontal.win_tree.leaves(), vec![top_id, bottom_id]);
+    keys(&mut horizontal, "SPC w c k");
+    assert_eq!(horizontal.win_tree.leaves(), vec![top_id, bottom_id]);
+
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
 fn vim_visual_mode_and_move_lines() {
     let dir = tmpdir("vimvisual");
     let mut e = Editor::new();
@@ -893,6 +941,12 @@ fn dired_allows_vim_leader_and_meta_commands() {
     keys(&mut e, "M-x");
     assert!(matches!(e.mode, Mode::Prompt(_)));
     e.mode = Mode::Normal;
+    keys(&mut e, ":");
+    assert!(matches!(
+        &e.mode,
+        Mode::Prompt(prompt) if matches!(&prompt.kind, PKind::Command)
+    ));
+    keys(&mut e, "ESC");
     keys(&mut e, "C-e");
     assert!(matches!(
         &e.mode,
@@ -904,6 +958,96 @@ fn dired_allows_vim_leader_and_meta_commands() {
     keys(&mut e, "C-h b");
     assert_eq!(e.buf().kind, BufKind::Help);
 
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn extended_command_suggestions_hide_motion_and_internal_commands() {
+    let dir = tmpdir("m-x-command-list");
+    let mut e = editor_in(&dir);
+    e.vim_mode = VimMode::Normal;
+    e.command_history = vec![
+        "forward-char".into(),
+        "forward-paragraph".into(),
+        "git-status".into(),
+        "not-a-command".into(),
+    ];
+
+    keys(&mut e, "M-x");
+
+    let Mode::Prompt(prompt) = &e.mode else {
+        panic!("M-x should open the command prompt");
+    };
+    let choices = prompt.choices.as_ref().unwrap();
+    assert!(choices.contains(&"git-status".to_string()));
+    assert!(choices.contains(&"run".to_string()));
+    assert!(choices.contains(&"save-buffer".to_string()));
+    assert!(!choices.contains(&"forward-char".to_string()));
+    assert!(!choices.contains(&"forward-paragraph".to_string()));
+    assert!(!choices.contains(&"self-insert-command".to_string()));
+    assert!(!choices.contains(&"not-a-command".to_string()));
+
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn run_command_streams_output_and_opens_results() {
+    let dir = tmpdir("run-command");
+    let source = dir.join("source.rs");
+    std::fs::write(&source, "let value = 1;\n").unwrap();
+    let mut e = editor_in(&dir);
+    let source_buffer = e.open_path(&source).unwrap();
+    e.switch_to(source_buffer);
+
+    e.run("run");
+    keys(&mut e, "C-u echo SPC compiling; SPC sleep SPC 0.4; SPC echo SPC source.rs:1: SPC error RET");
+    assert_eq!(e.windows.len(), 2);
+    assert_eq!(e.bufs[e.windows[0].buf_idx].path.as_deref(), Some(source.as_path()));
+    assert_eq!(e.buf().kind, BufKind::Run);
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut saw_elapsed_time = false;
+    let mut saw_live_output = false;
+    while !e.buf().lines.iter().any(|line| line.starts_with("Command finished in "))
+        && Instant::now() < deadline
+    {
+        e.tick();
+        saw_elapsed_time |= e.buf().lines.get(2).is_some_and(|line| {
+            line.starts_with("Command running... (") && !line.ends_with("(0.0s)")
+        });
+        saw_live_output |= e.buf().lines.iter().any(|line| line == "compiling")
+            && e.buf().lines.get(2).is_some_and(|line| line.starts_with("Command running..."));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    assert_eq!(e.buf().kind, BufKind::Run);
+    assert!(e
+        .buf()
+        .lines
+        .iter()
+        .any(|line| line == "$ echo compiling; sleep 0.4; echo source.rs:1: error"));
+    assert!(e.buf().lines.iter().any(|line| line == "compiling"));
+    assert!(e.buf().lines.iter().any(|line| line == "Process exited with code 0"));
+    assert!(e.buf().lines.iter().any(|line| line.starts_with("Command finished in ")));
+    assert!(!e.buf().lines.iter().any(|line| line.starts_with("Elapsed:")));
+    assert!(saw_elapsed_time);
+    assert!(saw_live_output);
+    assert!(e.buf().meta.iter().any(|meta| matches!(meta, LineMeta::Grep { .. })));
+    let compilation_buffer = e.cur;
+    e.vim_mode = VimMode::Normal;
+    keys(&mut e, "q");
+    assert_eq!(e.windows.len(), 1);
+    assert_eq!(e.buf().path.as_deref(), Some(source.as_path()));
+
+    e.split_window_below();
+    e.set_active_window(e.next_win_id - 1);
+    e.switch_to(compilation_buffer);
+    keys(&mut e, "SPC w q");
+    assert_eq!(e.windows.len(), 1);
+    assert_eq!(e.buf().path.as_deref(), Some(source.as_path()));
+
+    e.run("next-error");
+    assert_eq!(e.buf().path.as_deref(), Some(source.as_path()));
     std::fs::remove_dir_all(dir).ok();
 }
 
