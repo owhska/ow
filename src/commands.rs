@@ -776,27 +776,36 @@ impl Editor {
         self.grep_fresh = false;
 
         let (sender, receiver) = mpsc::channel();
+        let (stop_sender, stop_receiver) = mpsc::channel();
         self.run_rx = Some(receiver);
+        self.run_stop_tx = Some(stop_sender);
+        self.run_stopping = false;
         self.run_dir = Some(root);
         std::thread::spawn(move || {
-            let result = std::process::Command::new("sh")
+            let mut process = std::process::Command::new("sh");
+            process
                 .arg("-c")
                 .arg(command)
                 .current_dir(working_dir)
                 .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-                .map_err(|error| error.to_string());
+                .stderr(std::process::Stdio::piped());
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                process.process_group(0);
+            }
+            let result = process.spawn().map_err(|error| error.to_string());
             match result {
                 Err(error) => {
-                    let _ = sender.send(RunEvent::Finished(Err(error)));
+                    let _ = sender.send(RunEvent::Finished(Err(error), false));
                 }
                 Ok(mut child) => {
                     let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
                         let _ = child.kill();
-                        let _ = sender.send(RunEvent::Finished(Err(
-                            "could not capture command output".to_string(),
-                        )));
+                        let _ = sender.send(RunEvent::Finished(
+                            Err("could not capture command output".to_string()),
+                            false,
+                        ));
                         return;
                     };
                     let stdout_sender = sender.clone();
@@ -807,7 +816,7 @@ impl Editor {
                     let stderr_reader = std::thread::spawn(move || {
                         forward_command_output(stderr, stderr_sender);
                     });
-                    let result = child.wait().map_err(|error| error.to_string());
+                    let (result, stopped) = wait_for_run_command(&mut child, &stop_receiver);
                     let stdout_result = stdout_reader.join();
                     let stderr_result = stderr_reader.join();
                     if stdout_result.is_err() || stderr_result.is_err() {
@@ -815,11 +824,28 @@ impl Editor {
                             "Command output reader stopped unexpectedly".to_string(),
                         ));
                     }
-                    let _ = sender.send(RunEvent::Finished(result));
+                    let _ = sender.send(RunEvent::Finished(result, stopped));
                 }
             }
         });
         self.say(format!("Running: {}", self.run_command));
+    }
+
+    fn stop_run(&mut self) {
+        if self.run_rx.is_none() {
+            self.say("No command is running");
+            return;
+        }
+        if self.run_stopping {
+            self.say("Command is already stopping");
+            return;
+        }
+        if self.run_stop_tx.as_ref().is_some_and(|sender| sender.send(()).is_ok()) {
+            self.run_stopping = true;
+            self.say("Stopping command...");
+        } else {
+            self.say("Could not stop command");
+        }
     }
 
     fn finish_run(
@@ -829,13 +855,21 @@ impl Editor {
         root: &Path,
         command: &str,
         elapsed: Duration,
+        stopped: bool,
     ) {
-        let status = match result {
-            Ok(status) => status
-                .code()
-                .map(|code| format!("Process exited with code {code}"))
-                .unwrap_or_else(|| "Process terminated by signal".to_string()),
-            Err(error) => format!("Could not start command: {error}"),
+        let status = if stopped {
+            match result {
+                Ok(_) => "Process stopped by user".to_string(),
+                Err(error) => format!("Could not stop command: {error}"),
+            }
+        } else {
+            match result {
+                Ok(status) => status
+                    .code()
+                    .map(|code| format!("Process exited with code {code}"))
+                    .unwrap_or_else(|| "Process terminated by signal".to_string()),
+                Err(error) => format!("Could not start command: {error}"),
+            }
         };
         let elapsed_text = format!("Command finished in {:.1}s", elapsed.as_secs_f64());
         let mut text = format!("$ {command}\nDirectory: {}\n\n", root.display());
@@ -1124,6 +1158,62 @@ fn forward_command_output<R: std::io::Read + Send + 'static>(
     }
 }
 
+fn wait_for_run_command(
+    child: &mut std::process::Child,
+    stop: &Receiver<()>,
+) -> (Result<std::process::ExitStatus, String>, bool) {
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return (Ok(status), false),
+            Err(error) => return (Err(error.to_string()), false),
+            Ok(None) => {}
+        }
+
+        match stop.recv_timeout(Duration::from_millis(50)) {
+            Ok(()) => return (terminate_run_process(child), true),
+            Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {}
+        }
+    }
+}
+
+fn terminate_run_process(
+    child: &mut std::process::Child,
+) -> Result<std::process::ExitStatus, String> {
+    #[cfg(unix)]
+    {
+        let process_group = child.id() as libc::pid_t;
+        let term_result = unsafe { libc::kill(-process_group, libc::SIGTERM) };
+        let term_error = if term_result == -1 {
+            let error = std::io::Error::last_os_error();
+            (error.raw_os_error() != Some(libc::ESRCH)).then(|| error.to_string())
+        } else {
+            None
+        };
+        std::thread::sleep(Duration::from_millis(250));
+
+        let kill_result = unsafe { libc::kill(-process_group, libc::SIGKILL) };
+        let kill_error = if kill_result == -1 {
+            let error = std::io::Error::last_os_error();
+            (error.raw_os_error() != Some(libc::ESRCH)).then(|| error.to_string())
+        } else {
+            None
+        };
+        if kill_error.is_some() {
+            child.kill().map_err(|error| error.to_string())?;
+        }
+        let status = child.wait().map_err(|error| error.to_string())?;
+        if let Some(error) = kill_error.or(term_error) {
+            return Err(error);
+        }
+        Ok(status)
+    }
+    #[cfg(not(unix))]
+    {
+        child.kill().map_err(|error| error.to_string())?;
+        child.wait().map_err(|error| error.to_string())
+    }
+}
+
 type Cmd = fn(&mut Editor);
 
 pub static COMMANDS: &[(&str, Cmd)] = &[
@@ -1184,6 +1274,7 @@ pub static COMMANDS: &[(&str, Cmd)] = &[
     ("query-replace", |e| e.start_prompt(Prompt::new("Query replace: ", PKind::QrFrom, None))),
     ("find-file", |e| e.find_file_cmd()),
     ("run", |e| e.run_cmd()),
+    ("stop-run", |e| e.stop_run()),
     ("save-buffer", |e| e.save_cmd()),
     ("write-file", |e| e.write_file_cmd()),
     ("save-some-buffers", |e| e.save_some()),
@@ -1341,6 +1432,7 @@ pub static BINDINGS: &[(&str, &str)] = &[
     ("C-x C-c", "save-buffers-kill-terminal"),
     ("M-q", "save-buffers-kill-terminal"),
     ("M-x", "execute-extended-command"),
+    ("C-c C-c", "stop-run"),
     ("C-h b", "describe-bindings"),
     ("C-x g", "git-status"),
     ("C-x v d", "git-status"),

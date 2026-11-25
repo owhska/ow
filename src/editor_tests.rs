@@ -1052,6 +1052,37 @@ fn run_command_streams_output_and_opens_results() {
 }
 
 #[test]
+fn run_command_can_be_stopped_with_control_c_twice() {
+    let dir = tmpdir("stop-run-command");
+    let mut e = editor_in(&dir);
+
+    e.run("run");
+    keys(&mut e, "C-u sleep SPC 10 SPC & SPC echo SPC started; SPC wait RET");
+    assert_eq!(e.buf().kind, BufKind::Run);
+    let start_deadline = Instant::now() + Duration::from_secs(3);
+    while !e.buf().lines.iter().any(|line| line == "started")
+        && Instant::now() < start_deadline
+    {
+        e.tick();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(e.buf().lines.iter().any(|line| line == "started"));
+    keys(&mut e, "C-c C-c");
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !e.buf().lines.iter().any(|line| line == "Process stopped by user")
+        && Instant::now() < deadline
+    {
+        e.tick();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    assert!(e.buf().lines.iter().any(|line| line == "Process stopped by user"));
+    assert!(e.buf().lines.iter().any(|line| line.starts_with("Command finished in ")));
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
 fn leader_z_opens_project_tree_and_each_file_in_a_new_window() {
     let dir = tmpdir("project-tree");
     let nested = dir.join("src");

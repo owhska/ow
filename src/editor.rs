@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthChar;
 
@@ -38,7 +38,7 @@ pub enum PKind {
 
 enum RunEvent {
     Output(String),
-    Finished(Result<ExitStatus, String>),
+    Finished(Result<ExitStatus, String>, bool),
 }
 
 pub struct Prompt {
@@ -671,6 +671,8 @@ pub struct Editor {
     pub command_history: Vec<String>,
     pub run_command: String,
     run_rx: Option<Receiver<RunEvent>>,
+    run_stop_tx: Option<Sender<()>>,
+    run_stopping: bool,
     run_dir: Option<PathBuf>,
     run_started: Option<Instant>,
     run_elapsed_tenths: u64,
@@ -775,6 +777,8 @@ impl Editor {
             command_history: Vec::new(),
             run_command: String::new(),
             run_rx: None,
+            run_stop_tx: None,
+            run_stopping: false,
             run_dir: None,
             run_started: None,
             run_elapsed_tenths: 0,
@@ -1759,7 +1763,7 @@ impl Editor {
                 Some(Ok(event)) => event,
                 Some(Err(TryRecvError::Empty)) | None => break,
                 Some(Err(TryRecvError::Disconnected)) => {
-                    self.finish_current_run(Err("command process ended unexpectedly".to_string()));
+                    self.finish_current_run(Err("command process ended unexpectedly".to_string()), false);
                     return true;
                 }
             };
@@ -1768,8 +1772,8 @@ impl Editor {
                     self.append_run_output(line);
                     redraw = true;
                 }
-                RunEvent::Finished(result) => {
-                    self.finish_current_run(result);
+                RunEvent::Finished(result, stopped) => {
+                    self.finish_current_run(result, stopped);
                     return true;
                 }
             }
@@ -1794,13 +1798,15 @@ impl Editor {
         }
     }
 
-    fn finish_current_run(&mut self, result: Result<ExitStatus, String>) {
+    fn finish_current_run(&mut self, result: Result<ExitStatus, String>, stopped: bool) {
         self.run_rx = None;
+        self.run_stop_tx = None;
+        self.run_stopping = false;
         let root = self.run_dir.take().unwrap_or_else(|| self.cwd.clone());
         let command = self.run_command.clone();
         let output = std::mem::take(&mut self.run_output);
         let elapsed = self.run_started.take().map(|start| start.elapsed()).unwrap_or_default();
-        self.finish_run(result, &output, &root, &command, elapsed);
+        self.finish_run(result, &output, &root, &command, elapsed, stopped);
     }
 
     fn update_run_elapsed(&mut self) -> bool {

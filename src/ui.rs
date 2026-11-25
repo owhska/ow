@@ -112,6 +112,9 @@ fn special_styles(
             _ if line.starts_with("Process terminated") || line.starts_with("Could not start command:") => {
                 paint(0, length, fg(c(ERROR)).add_modifier(Modifier::BOLD));
             }
+            _ if line.starts_with("Process stopped by user") => {
+                paint(0, length, fg(c(WARN)).add_modifier(Modifier::BOLD));
+            }
             _ if line.starts_with("Command finished in ") => {
                 paint(0, length, fg(c(DIM)));
             }
