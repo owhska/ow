@@ -5,43 +5,69 @@ use crate::langs::{self, Lang};
 use ratatui::style::{Color, Modifier, Style};
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use syntect::highlighting::{
     FontStyle, HighlightIterator, HighlightState, Highlighter as SyHl, Style as SyStyle, Theme, ThemeSet,
 };
 use syntect::parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet};
 
 static SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
-static THEMES: OnceLock<(String, ThemeSet)> = OnceLock::new();
+static THEMES: OnceLock<ThemeSet> = OnceLock::new();
+static ACTIVE_THEME: OnceLock<RwLock<String>> = OnceLock::new();
 
 fn ss() -> &'static SyntaxSet {
     SYNTAXES.get_or_init(SyntaxSet::load_defaults_newlines)
 }
 
-fn themes() -> &'static (String, ThemeSet) {
+fn themes() -> &'static ThemeSet {
     THEMES.get_or_init(|| {
         let mut ts = ThemeSet::load_defaults();
         ts.themes.insert(CUSTOM.to_string(), custom_theme());
-        // OW_THEME: unset/"ow" = custom palette, "dark"/"light" = built-ins, or any syntect theme name
-        let want = match std::env::var("OW_THEME").ok().as_deref() {
-            Some("light") => "InspiredGitHub".to_string(),
-            Some("dark") => "base16-ocean.dark".to_string(),
-            None => CUSTOM.to_string(),
-            Some(n) => n.to_string(),
-        };
-        let name = if ts.themes.contains_key(&want) { want } else { CUSTOM.to_string() };
-        (name, ts)
+        ts.themes.insert(VIM_DEFAULT_LIGHT.to_string(), vim_default_light_theme());
+        ts.themes.insert(SOLAR.to_string(), solar_theme());
+        ts
     })
 }
 
+fn resolve_theme_name(name: &str, themes: &ThemeSet) -> Option<String> {
+    let name = name.trim();
+    let resolved = match name.to_ascii_lowercase().as_str() {
+        "ow" => CUSTOM,
+        "dark" => "base16-ocean.dark",
+        "light" => "InspiredGitHub",
+        "vim-light" | "vim default light" => VIM_DEFAULT_LIGHT,
+        "solar" => SOLAR,
+        _ => name,
+    };
+    themes.themes.contains_key(resolved).then(|| resolved.to_string())
+}
+
+fn active_theme() -> &'static RwLock<String> {
+    ACTIVE_THEME.get_or_init(|| {
+        let theme_set = themes();
+        let requested = std::env::var("OW_THEME")
+            .ok()
+            .or_else(|| std::fs::read_to_string(crate::editor::ow_config_dir().join("theme")).ok());
+        let name = requested
+            .as_deref()
+            .and_then(|name| resolve_theme_name(name, theme_set))
+            .unwrap_or_else(|| CUSTOM.to_string());
+        RwLock::new(name)
+    })
+}
+
+fn active_theme_name() -> String {
+    active_theme().read().unwrap().clone()
+}
+
 fn theme() -> &'static Theme {
-    let (n, ts) = themes();
-    &ts.themes[n]
+    let name = active_theme_name();
+    themes().themes.get(&name).unwrap_or(&themes().themes[CUSTOM])
 }
 
 fn is_light() -> bool {
-    let n = &themes().0;
-    n.contains("light") || n == "InspiredGitHub"
+    let name = active_theme_name();
+    name.to_ascii_lowercase().contains("light") || name == "InspiredGitHub"
 }
 
 fn truecolor() -> bool {
@@ -74,7 +100,7 @@ fn rgb(r: u8, g: u8, b: u8) -> Color {
 /// The default colour scheme. Edit the values here to retheme the whole editor
 /// (syntax, built-in tokenizer, git gutter, selection, current line).
 pub mod palette {
-    use ratatui::style::Color;
+    use ratatui::style::{Color, Modifier, Style};
     pub type Rgb = (u8, u8, u8);
     pub const FG: Rgb = (0xFF, 0xFF, 0xFF);
     pub const DIM: Rgb = (0x98, 0x98, 0x98);
@@ -94,14 +120,131 @@ pub mod palette {
 
     /// Palette entry -> terminal colour (truecolor or nearest of 256).
     pub fn c(rgb: Rgb) -> Color {
+        let rgb = if super::is_solar_theme() {
+            match rgb {
+                FG => (0, 0, 0),
+                DIM => (64, 64, 64),
+                KEYWORD => (0, 0, 0),
+                FUNC => (0, 0, 255),
+                STRING => (255, 69, 0),
+                TYPE => (0, 0, 0),
+                CONST => (255, 165, 0),
+                SPECIAL => (0, 128, 0),
+                ERROR => (255, 0, 0),
+                INFO => (0, 0, 255),
+                SEL => (224, 224, 208),
+                LINE => (240, 226, 179),
+                _ => rgb,
+            }
+        } else if super::is_vim_default_light() {
+            match rgb {
+                FG => (255, 255, 255),
+                DIM => (140, 140, 140),
+                KEYWORD => (205, 170, 255),
+                FUNC => (135, 180, 255),
+                STRING => (120, 225, 145),
+                TYPE => (100, 220, 220),
+                CONST => (255, 185, 90),
+                SPECIAL => (255, 150, 220),
+                ERROR => (255, 110, 100),
+                INFO => (100, 220, 120),
+                SEL => (45, 60, 100),
+                LINE => (20, 20, 20),
+                _ => rgb,
+            }
+        } else {
+            rgb
+        };
         super::rgb(rgb.0, rgb.1, rgb.2)
+    }
+
+    pub fn status_line_style(active: bool) -> Style {
+        if super::is_solar_theme() {
+            if active {
+                Style::default().fg(Color::Black).bg(super::rgb(128, 255, 160))
+            } else {
+                Style::default().fg(super::rgb(64, 64, 64)).bg(super::rgb(240, 226, 179))
+            }
+        } else if active {
+            Style::default().add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default().bg(c(LINE)).fg(c(DIM))
+        }
+    }
+
+    pub fn menu_selected_style() -> Style {
+        if super::is_solar_theme() {
+            Style::default().fg(Color::Black).bg(super::rgb(128, 255, 160))
+        } else {
+            Style::default().fg(c(FG)).bg(c(SEL))
+        }
+    }
+
+    pub fn cursor_style() -> Style {
+        if super::is_solar_theme() {
+            Style::default().fg(Color::Black).bg(super::rgb(128, 255, 160))
+        } else {
+            Style::default()
+        }
+    }
+
+    pub fn search_bg() -> Color {
+        if super::is_solar_theme() {
+            super::rgb(128, 255, 160)
+        } else if super::is_vim_default_light() {
+            Color::Indexed(11)
+        } else {
+            c(WARN)
+        }
     }
 }
 
 const CUSTOM: &str = "ow";
+const VIM_DEFAULT_LIGHT: &str = "vim-default-light";
+const SOLAR: &str = "solar";
 
 fn is_custom() -> bool {
-    themes().0 == CUSTOM
+    active_theme_name() == CUSTOM
+}
+
+fn is_vim_default_light() -> bool {
+    active_theme_name() == VIM_DEFAULT_LIGHT
+}
+
+pub fn is_solar_theme() -> bool {
+    active_theme_name() == SOLAR
+}
+
+pub fn terminal_theme_style() -> Option<Style> {
+    if is_solar_theme() {
+        Some(Style::default().fg(Color::Black).bg(rgb(240, 226, 179)))
+    } else if is_vim_default_light() {
+        Some(Style::default().fg(Color::White).bg(Color::Black))
+    } else if is_light() {
+        Some(Style::default().fg(Color::Black).bg(Color::White))
+    } else {
+        None
+    }
+}
+
+pub fn theme_names() -> Vec<String> {
+    let mut names: Vec<String> = themes().themes.keys().cloned().collect();
+    names.sort();
+    names
+}
+
+pub fn set_theme(name: &str) -> Result<String, String> {
+    let theme_set = themes();
+    let Some(name) = resolve_theme_name(name, theme_set) else {
+        return Err(format!("Unknown theme: {name}"));
+    };
+    let file = crate::editor::ow_config_dir().join("theme");
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| format!("Could not save theme: {error}"))?;
+    }
+    std::fs::write(&file, &name).map_err(|error| format!("Could not save theme: {error}"))?;
+    *active_theme().write().unwrap() = name.clone();
+    Ok(name)
 }
 
 fn custom_theme() -> Theme {
@@ -162,6 +305,99 @@ fn custom_theme() -> Theme {
     }
 }
 
+fn vim_default_light_theme() -> Theme {
+    use syntect::highlighting::{Color as C, ScopeSelectors, StyleModifier, ThemeItem, ThemeSettings};
+    let col = |r, g, b| C { r, g, b, a: 255 };
+    let mut scopes = Vec::new();
+    let mut add = |selectors: &str, foreground| {
+        if let Ok(scope) = selectors.parse::<ScopeSelectors>() {
+            scopes.push(ThemeItem {
+                scope,
+                style: StyleModifier { foreground: Some(foreground), background: None, font_style: None },
+            });
+        }
+    };
+    add("comment", col(135, 95, 255));
+    add("keyword, storage", col(0, 0, 160));
+    add("string", col(0, 110, 0));
+    add("constant.numeric, constant.character", col(150, 70, 0));
+    add("entity.name.function, support.function", col(30, 70, 180));
+    add("entity.name.type, support.type", col(0, 100, 110));
+    add("entity.name.tag, entity.other.attribute-name", col(130, 0, 120));
+    Theme {
+        name: Some(VIM_DEFAULT_LIGHT.to_string()),
+        author: Some("ow".to_string()),
+        settings: ThemeSettings {
+            foreground: Some(col(255, 255, 255)),
+            background: Some(col(0, 0, 0)),
+            selection: Some(col(45, 60, 100)),
+            line_highlight: Some(col(20, 20, 20)),
+            ..Default::default()
+        },
+        scopes,
+    }
+}
+
+fn solar_theme() -> Theme {
+    use syntect::highlighting::{Color as C, ScopeSelectors, StyleModifier, ThemeItem, ThemeSettings};
+    let col = |r, g, b| C { r, g, b, a: 255 };
+    let mut scopes = Vec::new();
+    let mut add = |selectors: &str, foreground, font_style| {
+        if let Ok(scope) = selectors.parse::<ScopeSelectors>() {
+            scopes.push(ThemeItem {
+                scope,
+                style: StyleModifier { foreground: Some(foreground), background: None, font_style },
+            });
+        }
+    };
+    let black = col(0, 0, 0);
+    let orange_red = col(255, 69, 0);
+    let blue = col(0, 0, 255);
+    let green = col(0, 128, 0);
+    let red = col(255, 0, 0);
+    let orange = col(255, 165, 0);
+    let gray = col(96, 96, 96);
+    add("comment", gray, None);
+    add("string, string.special", orange_red, None);
+    add("entity.name.function", blue, Some(FontStyle::BOLD));
+    add("support.function", blue, Some(FontStyle::BOLD));
+    add("keyword, storage, variable, constant, entity.name.type, support.type, entity.name.namespace, entity.other.attribute-name", black, Some(FontStyle::BOLD));
+    add("keyword.operator, punctuation", black, None);
+    add("symbol", green, None);
+    add("invalid, invalid.illegal", red, None);
+    add("warning, markup.changed", orange, None);
+    add("markup.inserted", col(0, 128, 0), None);
+    add("markup.deleted", red, None);
+    add(
+        "markup.heading, entity.name.section, punctuation.definition.heading",
+        blue,
+        Some(FontStyle::BOLD),
+    );
+    add("markup.bold", black, Some(FontStyle::BOLD));
+    add("markup.italic", gray, Some(FontStyle::ITALIC));
+    add(
+        "markup.underline.link, string.other.link, entity.name.link",
+        blue,
+        Some(FontStyle::UNDERLINE),
+    );
+    add("markup.raw, markup.inline.raw", col(0, 128, 0), None);
+    add("markup.quote", gray, Some(FontStyle::ITALIC));
+    add("markup.list, punctuation.definition.list", green, Some(FontStyle::BOLD));
+    add("markup.strikethrough", gray, Some(FontStyle::ITALIC));
+    Theme {
+        name: Some(SOLAR.to_string()),
+        author: Some("ow".to_string()),
+        settings: ThemeSettings {
+            foreground: Some(black),
+            background: Some(col(240, 226, 179)),
+            selection: Some(col(224, 224, 208)),
+            line_highlight: Some(col(240, 226, 179)),
+            ..Default::default()
+        },
+        scopes,
+    }
+}
+
 // ---------------------------------------------------------------- palette
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Tok {
@@ -192,6 +428,31 @@ fn tok_style(t: Tok) -> Style {
             Tok::Attr => f(SPECIAL),
             Tok::Section => f(SPECIAL).add_modifier(Modifier::BOLD),
             Tok::Key => f(FUNC),
+        };
+    }
+    if is_vim_default_light() {
+        return match t {
+            Tok::Normal => Style::default().fg(Color::White),
+            Tok::Keyword => Style::default().fg(rgb(205, 170, 255)),
+            Tok::Type => Style::default().fg(rgb(100, 220, 220)),
+            Tok::Str => Style::default().fg(rgb(120, 225, 145)),
+            Tok::Comment => Style::default().fg(Color::Indexed(99)),
+            Tok::Number => Style::default().fg(rgb(255, 185, 90)),
+            Tok::Func => Style::default().fg(rgb(135, 180, 255)),
+            Tok::Attr => Style::default().fg(rgb(255, 150, 220)),
+            Tok::Section => Style::default().fg(rgb(255, 150, 220)).add_modifier(Modifier::BOLD),
+            Tok::Key => Style::default().fg(rgb(135, 180, 255)),
+        };
+    }
+    if is_solar_theme() {
+        return match t {
+            Tok::Normal => Style::default().fg(Color::Black),
+            Tok::Keyword | Tok::Type | Tok::Number | Tok::Attr | Tok::Section | Tok::Key => {
+                Style::default().fg(Color::Black).add_modifier(Modifier::BOLD)
+            }
+            Tok::Str => Style::default().fg(rgb(255, 69, 0)),
+            Tok::Comment => Style::default().fg(rgb(96, 96, 96)),
+            Tok::Func => Style::default().fg(rgb(0, 0, 255)).add_modifier(Modifier::BOLD),
         };
     }
     let light = is_light();
@@ -460,6 +721,15 @@ impl Highlighter {
         ss().find_syntax_by_name(name).or_else(|| ss().find_syntax_by_extension(name)).map(Self::from_syntect)
     }
 
+    pub fn refresh_theme(&mut self) {
+        if let Engine::Syntect { syntax, hl, states, base } = &mut self.engine {
+            *hl = SyHl::new(theme());
+            *states = vec![init_state(*syntax, hl)];
+            *base = 0;
+        }
+        self.invalidate(0);
+    }
+
     pub fn list_names() -> Vec<String> {
         let mut v: Vec<String> = langs::LANGS.iter().map(|l| l.name.to_string()).collect();
         v.extend(ss().syntaxes().iter().filter(|s| !s.hidden).map(|s| s.name.clone()));
@@ -616,6 +886,9 @@ fn conv(s: SyStyle) -> Style {
     if s.font_style.contains(FontStyle::BOLD) {
         st = st.add_modifier(Modifier::BOLD);
     }
+    if s.font_style.contains(FontStyle::ITALIC) {
+        st = st.add_modifier(Modifier::ITALIC);
+    }
     if s.font_style.contains(FontStyle::UNDERLINE) {
         st = st.add_modifier(Modifier::UNDERLINED);
     }
@@ -660,6 +933,80 @@ fn syntect_comment(name: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vim_default_light_theme_has_black_background_and_blue_comments() {
+        let theme = &themes().themes[VIM_DEFAULT_LIGHT];
+        assert_eq!(theme.settings.foreground, Some(syntect::highlighting::Color { r: 255, g: 255, b: 255, a: 255 }));
+        assert_eq!(theme.settings.background, Some(syntect::highlighting::Color { r: 0, g: 0, b: 0, a: 255 }));
+        assert!(theme.scopes.iter().any(|item| {
+            item.style.foreground == Some(syntect::highlighting::Color { r: 135, g: 95, b: 255, a: 255 })
+        }));
+    }
+
+    #[test]
+    fn solar_theme_registers_palette_and_bold_functions() {
+        let theme = &themes().themes[SOLAR];
+        assert_eq!(theme.settings.foreground, Some(syntect::highlighting::Color { r: 0, g: 0, b: 0, a: 255 }));
+        assert_eq!(theme.settings.background, Some(syntect::highlighting::Color { r: 240, g: 226, b: 179, a: 255 }));
+        assert!(theme.scopes.iter().any(|item| {
+            item.style.foreground == Some(syntect::highlighting::Color { r: 255, g: 69, b: 0, a: 255 })
+        }));
+        assert!(theme.scopes.iter().any(|item| item.style.font_style == Some(FontStyle::BOLD)));
+        assert!(theme.scopes.iter().any(|item| {
+            item.style.foreground == Some(syntect::highlighting::Color { r: 0, g: 0, b: 0, a: 255 })
+                && item.style.font_style == Some(FontStyle::BOLD)
+        }));
+        assert!(theme.scopes.iter().any(|item| {
+            item.style.foreground == Some(syntect::highlighting::Color { r: 0, g: 0, b: 255, a: 255 })
+                && item.style.font_style == Some(FontStyle::BOLD)
+        }));
+        assert!(theme.scopes.iter().any(|item| item.style.font_style == Some(FontStyle::ITALIC)));
+        assert!(theme.scopes.iter().any(|item| {
+            item.style.foreground == Some(syntect::highlighting::Color { r: 0, g: 128, b: 0, a: 255 })
+        }));
+        let italic = SyStyle {
+            foreground: syntect::highlighting::Color { r: 96, g: 96, b: 96, a: 255 },
+            background: syntect::highlighting::Color { r: 0, g: 0, b: 0, a: 255 },
+            font_style: FontStyle::ITALIC,
+        };
+        assert!(conv(italic).add_modifier.contains(Modifier::ITALIC));
+    }
+
+    #[test]
+    fn solar_theme_highlights_markdown_constructs() {
+        let syntax = ss().find_syntax_by_extension("md").unwrap();
+        let theme = &themes().themes[SOLAR];
+        let highlighter = SyHl::new(theme);
+        let render = |line: &str| {
+            let mut state = init_state(syntax, &highlighter);
+            let line = format!("{line}\n");
+            let ops = state.0.parse_line(&line, ss()).unwrap();
+            HighlightIterator::new(&mut state.1, &ops, &line, &highlighter)
+                .map(|(style, text)| (text.to_string(), style))
+                .collect::<Vec<_>>()
+        };
+        let style_for = |spans: &[(String, SyStyle)], text: &str| {
+            spans.iter().find(|(span, _)| span.contains(text)).unwrap().1
+        };
+
+        let heading = render("# Heading");
+        let heading = style_for(&heading, "Heading");
+        assert_eq!(heading.foreground, syntect::highlighting::Color { r: 0, g: 0, b: 255, a: 255 });
+        assert!(heading.font_style.contains(FontStyle::BOLD));
+
+        let bold = render("**bold**");
+        let bold = style_for(&bold, "bold");
+        assert!(bold.font_style.contains(FontStyle::BOLD));
+
+        let italic = render("*italic*");
+        let italic = style_for(&italic, "italic");
+        assert!(italic.font_style.contains(FontStyle::ITALIC));
+
+        let code = render("`code`");
+        let code = style_for(&code, "code");
+        assert_eq!(code.foreground, syntect::highlighting::Color { r: 0, g: 128, b: 0, a: 255 });
+    }
 
     #[test]
     fn typescript_tokens() {

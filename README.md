@@ -47,7 +47,7 @@ Emacs-style functionality for operations outside Vim's navigation and modal edit
 - `m{a-z}` sets a local mark; `'{a-z}` jumps to its line and `` `{a-z} `` jumps to its exact position.
 - `%` jumps between matching `()`, `[]`, and `{}` delimiters.
 - `C-v` enters Visual Block mode; rectangular selections can be yanked, deleted or changed.
-- `SPC r f` opens recent files; `SPC r s` opens persistent search history; `SPC b m` bookmarks the current file and `SPC b b` opens bookmarks.
+- `SPC r f` opens recent files; `SPC r s` opens persistent search history; `SPC b m` bookmarks the current file, `SPC b b` opens bookmarks, and `SPC b d` removes the current file from bookmarks. Harpoon-style quick files are separate: `SPC a` adds the current file, `SPC A` opens the list (`d` deletes the selected item), and `SPC 1`–`SPC 4` jump to the first four quick files.
 - `M-x` prioritizes persistent command history before the full command list.
 - `C-n` in Normal mode selects all whole-word occurrences under point and enters multi-cursor Insert mode; typed characters are inserted at each occurrence.
 - A lightweight session file restores open file paths and cursor positions when OW starts without file arguments.
@@ -129,8 +129,12 @@ Normal-mode macro recording (`q{register}` / `@{register}`) is intentionally not
 | `SPC f` | Find file in project |
 | `SPC r f` | Recent files |
 | `SPC r s` | Search history |
+| `SPC a` | Add current file to quick files |
+| `SPC A` | Open quick-file list; `d` deletes the selected item |
+| `SPC 1`–`SPC 4` | Jump to quick file 1–4 |
 | `SPC b m` | Bookmark current file |
 | `SPC b b` | Open file bookmarks |
+| `SPC b d` | Remove current file from bookmarks |
 | `SPC p g` | Search text in project |
 | `SPC e` | Open directory explorer |
 | `SPC z` | Toggle the left project-tree sidebar; expand directories and open files in new windows on the right |
@@ -292,7 +296,9 @@ Highlighting is incremental and restarts near the viewport in huge files.
 
 - `M-x set-language` overrides language detection.
 - Default colors come from the custom palette in `syntax::palette`.
-- `OW_THEME=dark|light|<syntect theme name>` selects a built-in theme.
+- `M-x set-theme` selects a theme and saves it in `~/.config/ow/theme`. The `vim-default-light` theme uses the Vim default light palette on a black background, comments in `#875fff`, and a LightYellow search background.
+- The `solar` theme uses a pale yellow background, black text, reddish-orange strings, blue bold functions, and a light-green cursor/status bar. Select it with `M-x set-theme`, and the choice is saved.
+- `OW_THEME=dark|light|<syntect theme name>` overrides the saved theme.
 - Add language support through `src/langs.rs`.
 
 ## Known limitations

@@ -984,7 +984,10 @@ impl Editor {
         t.push_str("LEADER — SPC\n");
         t.push_str("  SPC f               find file in project\n");
         t.push_str("  SPC r f / SPC r s   recent files / search history\n");
-        t.push_str("  SPC b m / SPC b b   bookmark current file / open bookmark\n");
+        t.push_str("  SPC a / SPC A       add current file / open quick-file list (d deletes selected)\n");
+        t.push_str("  SPC 1-4             jump to quick file 1-4\n");
+        t.push_str("  SPC b m / SPC b b   bookmark current file / open bookmarks\n");
+        t.push_str("  SPC b d             remove current file from bookmarks\n");
         t.push_str("  SPC SPC             grep in project\n");
         t.push_str("  SPC e               file explorer (Dired)\n");
         t.push_str("  SPC z               toggle left project-tree sidebar (RET expands; files open in new windows)\n");
@@ -1075,6 +1078,10 @@ impl Editor {
 
     fn set_language_cmd(&mut self) {
         self.start_prompt(Prompt::new("Language: ", PKind::SetLang, Some(Highlighter::list_names())));
+    }
+
+    fn set_theme_cmd(&mut self) {
+        self.start_prompt(Prompt::new("Theme: ", PKind::SetTheme, Some(crate::syntax::theme_names())));
     }
 }
 
@@ -1290,6 +1297,7 @@ pub static COMMANDS: &[(&str, Cmd)] = &[
     ("universal-argument", |e| e.universal_argument()),
     ("describe-bindings", |e| e.describe_bindings()),
     ("set-language", |e| e.set_language_cmd()),
+    ("set-theme", |e| e.set_theme_cmd()),
     ("toggle-line-numbers", |e| {
         e.line_numbers = !e.line_numbers;
         let s = if e.line_numbers { "on" } else { "off" };

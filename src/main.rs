@@ -29,7 +29,7 @@ M-% query-replace, M-x commands, C-h b all bindings.
 Git:     C-x g status, C-x v = diff, C-x v l log, C-x v g blame, C-x v a stage,
          C-x v c commit, C-x v o checkout, C-x v n/p hunks, C-x v F/P pull/push.
 Project: C-x p f find file in project, C-x p g grep project, M-g n/p next/prev match.
-Env:     OW_THEME=light|dark|<syntect theme name>";
+Theme:   M-x set-theme; persists in ~/.config/ow/theme. OW_THEME=light|dark|<theme> overrides it.";
 
 fn base64(data: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

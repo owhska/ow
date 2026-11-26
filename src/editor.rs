@@ -16,6 +16,8 @@ use unicode_width::UnicodeWidthChar;
 #[derive(Clone, Debug)]
 pub enum PKind {
     FindFile,
+    QuickFiles,
+    SetTheme,
     WriteFile,
     Switch,
     Kill,
@@ -667,6 +669,7 @@ pub struct Editor {
     pub last_search_forward: bool,
     pub recent_files: Vec<PathBuf>,
     pub bookmarks: Vec<PathBuf>,
+    pub quick_files: Vec<PathBuf>,
     pub search_history: Vec<String>,
     pub command_history: Vec<String>,
     pub run_command: String,
@@ -773,6 +776,7 @@ impl Editor {
             last_search_forward: true,
             recent_files: Vec::new(),
             bookmarks: Vec::new(),
+            quick_files: Vec::new(),
             search_history: Vec::new(),
             command_history: Vec::new(),
             run_command: String::new(),
@@ -924,6 +928,141 @@ impl Editor {
         let choices = self.bookmarks.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>();
         if choices.is_empty() { self.say("No file bookmarks"); return; }
         self.start_prompt(Prompt::new("Bookmark: ", PKind::FindFile, Some(choices)));
+    }
+
+    pub fn remove_current_file_bookmark(&mut self) {
+        let Some(path) = self.buf().path.clone() else { self.say("Current buffer is not a file"); return; };
+        if self.bookmarks.is_empty() {
+            self.bookmarks = std::fs::read_to_string(ow_config_dir().join("bookmarks"))
+                .map(|s| s.lines().map(PathBuf::from).collect())
+                .unwrap_or_default();
+        }
+        let original_len = self.bookmarks.len();
+        self.bookmarks.retain(|bookmark| bookmark != &path);
+        if self.bookmarks.len() == original_len {
+            self.say("Current file is not bookmarked");
+            return;
+        }
+
+        let file = ow_config_dir().join("bookmarks");
+        if let Some(parent) = file.parent() {
+            if let Err(error) = std::fs::create_dir_all(parent) {
+                self.say(format!("Could not save bookmarks: {error}"));
+                return;
+            }
+        }
+        let data = self.bookmarks.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>().join("\n");
+        if let Err(error) = std::fs::write(file, data) {
+            self.say(format!("Could not save bookmarks: {error}"));
+            return;
+        }
+        self.say("File bookmark removed");
+    }
+
+    fn load_quick_files(&mut self) -> Result<(), String> {
+        if !self.quick_files.is_empty() {
+            return Ok(());
+        }
+        let file = ow_config_dir().join("quick-files");
+        match std::fs::read_to_string(file) {
+            Ok(data) => {
+                self.quick_files = data.lines().map(PathBuf::from).filter(|path| path.exists()).collect();
+                Ok(())
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(format!("Could not load quick files: {error}")),
+        }
+    }
+
+    fn save_quick_files(&self, files: &[PathBuf]) -> Result<(), String> {
+        let file = ow_config_dir().join("quick-files");
+        if let Some(parent) = file.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| format!("Could not save quick files: {error}"))?;
+        }
+        let data = files.iter().map(|path| path.to_string_lossy().to_string()).collect::<Vec<_>>().join("\n");
+        std::fs::write(file, data).map_err(|error| format!("Could not save quick files: {error}"))
+    }
+
+    pub fn add_quick_file(&mut self) {
+        let Some(path) = self.buf().path.clone() else { self.say("Current buffer is not a file"); return; };
+        if let Err(error) = self.load_quick_files() {
+            self.say(error);
+            return;
+        }
+        if self.quick_files.contains(&path) {
+            self.say("File is already in quick files");
+            return;
+        }
+        let mut files = self.quick_files.clone();
+        files.push(path);
+        match self.save_quick_files(&files) {
+            Ok(()) => {
+                self.quick_files = files;
+                self.say(format!("Added quick file {}", self.quick_files.len()));
+            }
+            Err(error) => self.say(error),
+        }
+    }
+
+    pub fn quick_files_cmd(&mut self) {
+        if let Err(error) = self.load_quick_files() {
+            self.say(error);
+            return;
+        }
+        self.quick_files.retain(|path| path.exists());
+        let choices = self.quick_files.iter().map(|path| path.to_string_lossy().to_string()).collect::<Vec<_>>();
+        if choices.is_empty() {
+            self.say("No quick files");
+            return;
+        }
+        self.start_prompt(Prompt::new("Quick file (RET open, d delete): ", PKind::QuickFiles, Some(choices)));
+    }
+
+    pub fn quick_file_at(&mut self, slot: usize) {
+        if let Err(error) = self.load_quick_files() {
+            self.say(error);
+            return;
+        }
+        let Some(path) = slot.checked_sub(1).and_then(|index| self.quick_files.get(index)).cloned() else {
+            self.say(format!("No quick file at slot {slot}"));
+            return;
+        };
+        if !path.exists() {
+            self.say(format!("Quick file does not exist: {}", path.display()));
+            return;
+        }
+        match self.open_path(&path) {
+            Ok(index) => self.switch_to(index),
+            Err(error) => self.say(error),
+        }
+    }
+
+    fn remove_selected_quick_file(&mut self, prompt: &mut Prompt) {
+        let Some(selected) = prompt.matches.get(prompt.sel).cloned() else {
+            self.say("No quick file selected");
+            return;
+        };
+        let selected = PathBuf::from(selected);
+        let mut files = self.quick_files.clone();
+        let original_len = files.len();
+        files.retain(|path| path != &selected);
+        if files.len() == original_len {
+            self.say("Selected file is not in quick files");
+            return;
+        }
+        match self.save_quick_files(&files) {
+            Ok(()) => {
+                self.quick_files = files;
+                let choices: Vec<String> = self.quick_files.iter().map(|path| path.to_string_lossy().to_string()).collect();
+                prompt.lower = choices.iter().map(|path| path.to_lowercase()).collect();
+                prompt.choices = Some(choices);
+                prompt.input.clear();
+                prompt.cur = 0;
+                prompt.update();
+                self.say("Quick file removed");
+            }
+            Err(error) => self.say(error),
+        }
     }
 
     pub fn search_history_cmd(&mut self) {
@@ -2670,6 +2809,9 @@ impl Editor {
                 self.prompt_done(p.kind, value);
                 return;
             }
+            "d" if matches!(&p.kind, PKind::QuickFiles) => {
+                self.remove_selected_quick_file(&mut p);
+            }
             "TAB" => {
                 if p.choices.is_some() && !p.matches.is_empty() {
                     p.sel = (p.sel + 1) % p.matches.len();
@@ -2810,6 +2952,13 @@ impl Editor {
                     self.find_file(value.trim());
                 }
             }
+            PKind::QuickFiles => {
+                if value.trim().is_empty() {
+                    self.say("Quit");
+                } else {
+                    self.find_file(value.trim());
+                }
+            }
             PKind::WriteFile => {
                 if !value.trim().is_empty() {
                     let p = self.norm_path(value.trim());
@@ -2905,6 +3054,15 @@ impl Editor {
                     self.say(format!("Language: {name}"));
                 }
                 None => self.say("Unknown language"),
+            },
+            PKind::SetTheme => match crate::syntax::set_theme(value.trim()) {
+                Ok(name) => {
+                    for buffer in &mut self.bufs {
+                        buffer.hl.refresh_theme();
+                    }
+                    self.say(format!("Theme set: {name}"));
+                }
+                Err(error) => self.say(error),
             },
             PKind::DiredCreate(dir) => {
                 let input = value.trim();
@@ -3265,7 +3423,7 @@ impl Editor {
 
 }
 
-fn ow_config_dir() -> PathBuf {
+pub(crate) fn ow_config_dir() -> PathBuf {
     if let Some(path) = std::env::var_os("XDG_CONFIG_HOME") { return PathBuf::from(path).join("ow"); }
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("." )).join(".config/ow")
 }

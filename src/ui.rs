@@ -1,6 +1,7 @@
 //! Rendering with ratatui: text area, git gutter, mode line, echo area.
 use crate::buffer::*;
 use crate::editor::*;
+use crate::syntax::{is_solar_theme, terminal_theme_style};
 use crate::syntax::palette::*;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -73,7 +74,7 @@ fn special_styles(
                 paint(
                     snippet_start + match_start,
                     snippet_start + match_end,
-                    Style::default().bg(c(WARN)).fg(Color::Black),
+                    Style::default().bg(search_bg()).fg(Color::Black),
                 );
             }
             _ => paint(0, length, bold()),
@@ -88,7 +89,7 @@ fn special_styles(
                 paint(
                     snippet_start + match_start,
                     snippet_start + match_end,
-                    Style::default().bg(c(WARN)).fg(Color::Black),
+                    Style::default().bg(search_bg()).fg(Color::Black),
                 );
             }
             _ if line.starts_with("$ ") => {
@@ -360,7 +361,7 @@ fn render_window(
                     overlays.push((
                         start_column,
                         end_column,
-                        Style::default().bg(c(WARN)).fg(Color::Black),
+                        Style::default().bg(search_bg()).fg(Color::Black),
                     ));
                 }
             }
@@ -369,7 +370,7 @@ fn render_window(
                     overlays.push((
                         start.col,
                         end.col,
-                        Style::default().bg(c(WARN)).fg(Color::Black),
+                        Style::default().bg(search_bg()).fg(Color::Black),
                     ));
                 }
             }
@@ -421,12 +422,12 @@ fn render_window(
                         line_index + 1,
                         width = line_number_width - 1
                     );
-                    frame_buffer.set_string(
-                        rect.x + git_gutter_width as u16,
-                        y,
-                        number,
-                        fg(c(DIM)),
-                    );
+                    let number_style = if is_solar_theme() && is_active && line_index == cursor.line {
+                        fg(c(FG))
+                    } else {
+                        fg(c(DIM))
+                    };
+                    frame_buffer.set_string(rect.x + git_gutter_width as u16, y, number, number_style);
                 }
             }
 
@@ -441,6 +442,19 @@ fn render_window(
                 styles.as_deref(),
                 &overlays,
             );
+
+            if is_active && is_solar_theme() && cursor.line == line_index && cursor.col == line_length {
+                let cursor_column = display_col(&line, cursor.col, tab_width);
+                let segment_start = if editor.wrap { segment_left } else { left };
+                if cursor_column >= segment_start && cursor_column <= segments[segment_index].1 {
+                    let x = rect.x
+                        + (git_gutter_width + line_number_width) as u16
+                        + cursor_column.saturating_sub(segment_start) as u16;
+                    if x < rect.x + rect.width {
+                        frame_buffer.set_string(x, y, " ", cursor_style());
+                    }
+                }
+            }
 
             if editor.wrap && is_active && cursor.line == line_index {
                 let display_column = display_col(&line, cursor.col, tab_width);
@@ -541,11 +555,7 @@ fn render_window(
         }
     }
 
-    let mode_line_style = if is_active {
-        Style::default().add_modifier(Modifier::REVERSED)
-    } else {
-        Style::default().bg(c(LINE)).fg(c(DIM))
-    };
+    let mode_line_style = status_line_style(is_active);
 
     let mode_line_y = rect.y + rect.height - 1;
     let width = rect.width as usize;
@@ -694,7 +704,7 @@ fn render_completion_popup(
 
     let border_style = Style::default().fg(c(DIM)).bg(c(LINE));
     let body_style = Style::default().fg(c(FG)).bg(c(LINE));
-    let selected_style = Style::default().fg(c(FG)).bg(c(SEL));
+    let selected_style = menu_selected_style();
     let inner_width = panel_width.saturating_sub(2) as usize;
     let top = format!("┌{}┐", "─".repeat(inner_width));
     let bottom = format!("└{}┘", "─".repeat(inner_width));
@@ -781,6 +791,9 @@ pub fn render(frame: &mut Frame, editor: &mut Editor) {
     }
 
     let frame_buffer = frame.buffer_mut();
+    if let Some(style) = terminal_theme_style() {
+        frame_buffer.set_style(area, style);
+    }
     let mut cursor: Option<(u16, u16)> = None;
 
     if tree_width > 0 {
@@ -911,7 +924,7 @@ pub fn render(frame: &mut Frame, editor: &mut Editor) {
                     }
 
                     let style = if prompt.hint.is_empty() && index == prompt.sel {
-                        Style::default().add_modifier(Modifier::REVERSED)
+                        menu_selected_style()
                     } else {
                         fg(c(DIM))
                     };

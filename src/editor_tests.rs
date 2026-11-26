@@ -178,6 +178,34 @@ fn insert_tab_still_indents_without_completion() {
 }
 
 #[test]
+fn leader_number_jumps_to_corresponding_quick_file() {
+    let dir = tmpdir("quick-bookmark");
+    let first = dir.join("first.rs");
+    let second = dir.join("second.rs");
+    std::fs::write(&first, "").unwrap();
+    std::fs::write(&second, "").unwrap();
+
+    let mut e = editor_in(&dir);
+    e.vim_mode = VimMode::Normal;
+    let first_idx = e.open_path(&first).unwrap();
+    e.open_path(&second).unwrap();
+    e.bookmarks = vec![first.clone()];
+    e.quick_files = vec![first, second.clone()];
+    e.switch_to(first_idx);
+
+    keys(&mut e, "SPC 2");
+
+    assert_eq!(e.buf().path.as_deref(), Some(second.as_path()));
+    assert!(e.vim_pending.is_empty());
+
+    keys(&mut e, "SPC A");
+    assert!(matches!(
+        &e.mode,
+        Mode::Prompt(prompt) if matches!(&prompt.kind, PKind::QuickFiles)
+    ));
+}
+
+#[test]
 fn dd_removes_the_entire_last_line() {
     let dir = tmpdir("dd-last-line");
     let mut e = editor_in(&dir);

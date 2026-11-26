@@ -726,7 +726,7 @@ impl Editor {
         }
 
         // Vim count prefix (e.g. 3j, 2dw, 4yy). Zero remains a motion.
-        if self.vim_op.is_none() && n.len()==1 && n.chars().next().is_some_and(|c| c.is_ascii_digit() && (c!='0' || self.vim_count>0)) {
+        if !leader_pending && self.vim_op.is_none() && n.len()==1 && n.chars().next().is_some_and(|c| c.is_ascii_digit() && (c!='0' || self.vim_count>0)) {
             let digit=n.parse::<usize>().unwrap_or(0);
             if self.vim_count < 1_000_000 { self.vim_count=self.vim_count.saturating_mul(10).saturating_add(digit); }
             return true;
@@ -860,10 +860,17 @@ impl Editor {
                     self.project_find_file();
                     return true;
                 }
+                "SPC a" => { self.vim_pending.clear(); self.add_quick_file(); return true; }
+                "SPC A" => { self.vim_pending.clear(); self.quick_files_cmd(); return true; }
+                "SPC 1" => { self.vim_pending.clear(); self.quick_file_at(1); return true; }
+                "SPC 2" => { self.vim_pending.clear(); self.quick_file_at(2); return true; }
+                "SPC 3" => { self.vim_pending.clear(); self.quick_file_at(3); return true; }
+                "SPC 4" => { self.vim_pending.clear(); self.quick_file_at(4); return true; }
                 "SPC r f" => { self.vim_pending.clear(); self.recent_files_cmd(); return true; }
                 "SPC r s" => { self.vim_pending.clear(); self.search_history_cmd(); return true; }
                 "SPC b m" => { self.vim_pending.clear(); self.bookmark_current_file(); return true; }
                 "SPC b b" => { self.vim_pending.clear(); self.bookmark_list(); return true; }
+                "SPC b d" => { self.vim_pending.clear(); self.remove_current_file_bookmark(); return true; }
 
                 // Git namespace: <leader>g ...
                 "SPC g s" => {
