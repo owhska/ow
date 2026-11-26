@@ -282,7 +282,7 @@ The gutter updates live while editing.
 
 Project file search falls back to a directory walk outside Git repositories.
 
-Project grep opens a results buffer. Use `RET`, `M-g n` or `M-g p` to visit matches.
+Project find-file shows a centered Telescope-style popup; type to fuzzy-filter and use arrow keys / `RET` to open a file. Project grep keeps its query prompt at the bottom, then opens matching results in a centered popup with the matched text highlighted; type to narrow results, use arrows and `RET` to visit a match, or `ESC` to return to the current buffer. Grep matches remain available to `M-g n` / `M-g p`.
 
 ## Syntax highlighting
 

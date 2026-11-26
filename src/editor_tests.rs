@@ -528,10 +528,20 @@ fn git_workflow_through_the_editor() {
     keys(&mut e, "C-x p f b.rs RET");
     assert_eq!(e.buf().name, "b.rs");
     keys(&mut e, "C-x p g t w o RET");
-    assert_eq!(e.buf().kind, BufKind::Grep);
-    assert!(e.buf().lines.iter().any(|l| l.starts_with("a.txt:2:")), "{:?}", e.buf().lines);
+    assert_eq!(e.buf().name, "b.rs");
+    let Mode::Prompt(prompt) = &e.mode else {
+        panic!("grep results should open as a selection popup");
+    };
+    assert!(matches!(&prompt.kind, PKind::ProjGrepResults { .. }));
+    assert!(prompt.matches.iter().any(|result| result.starts_with("a.txt:2:")));
+
+    keys(&mut e, "RET");
+    assert_eq!(e.buf().name, "a.txt");
+    assert_eq!(e.buf().cursor.line, 1);
+    let grep_buffer = e.bufs.iter().find(|buffer| buffer.kind == BufKind::Grep).unwrap();
+    assert!(grep_buffer.lines.iter().any(|line| line.starts_with("a.txt:2:")));
     assert!(matches!(
-        e.buf().meta.get(2),
+        grep_buffer.meta.get(2),
         Some(LineMeta::Grep { match_start: 0, match_end: 3, .. })
     ));
     keys(&mut e, "M-g n");
@@ -1413,29 +1423,16 @@ fn mouse_scroll_does_not_change_focus_and_scrolls_hovered_window() {
 }
 
 #[test]
-fn mouse_selects_and_opens_grep_results() {
-    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
-
+fn grep_popup_opens_selected_result() {
     let dir = tmpdir("mouse-grep-result");
     std::fs::write(dir.join("a.txt"), "skip\nneedle here\n").unwrap();
     let mut e = editor_in(&dir);
     e.screen_w = 80;
     e.screen_h = 24;
     keys(&mut e, "C-x p g needle RET");
-    assert_eq!(e.buf().kind, BufKind::Grep);
-    let result_line = e.buf().meta.iter().position(|meta| matches!(meta, LineMeta::Grep { .. })).unwrap();
-
-    let click = MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: 5,
-        row: result_line as u16,
-        modifiers: KeyModifiers::NONE,
-    };
-    e.on_mouse(click);
-    assert_eq!(e.buf().cursor.line, result_line);
-    assert_eq!(e.buf().kind, BufKind::Grep);
-
-    e.on_mouse(click);
+    assert_eq!(e.buf().kind, BufKind::File);
+    assert!(matches!(e.mode, Mode::Prompt(_)));
+    keys(&mut e, "RET");
     assert_eq!(e.buf().path.as_deref(), Some(dir.join("a.txt").as_path()));
     assert_eq!(e.buf().cursor.line, 1);
     std::fs::remove_dir_all(dir).ok();

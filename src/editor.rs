@@ -28,6 +28,7 @@ pub enum PKind {
     Run,
     ProjFile,
     ProjGrep,
+    ProjGrepResults { root: PathBuf, entries: Vec<(String, LineMeta)> },
     QrFrom,
     QrTo(String),
     SearchHistory,
@@ -84,9 +85,10 @@ impl Prompt {
         self.sel = 0;
         self.hint.clear();
         let Some(ch) = &self.choices else { return };
+        let limit = if matches!(&self.kind, PKind::ProjGrepResults { .. }) { 3000 } else { 200 };
         let q = self.input.to_lowercase();
         if q.trim().is_empty() {
-            self.matches = ch.iter().take(200).cloned().collect();
+            self.matches = ch.iter().take(limit).cloned().collect();
             return;
         }
         let tokens: Vec<&str> = q.split_whitespace().collect();
@@ -109,7 +111,7 @@ impl Prompt {
             }
         }
         scored.sort_by(|a, b| b.0.cmp(&a.0).then(ch[a.1].len().cmp(&ch[b.1].len())));
-        self.matches = scored.into_iter().take(200).map(|(_, i)| ch[i].clone()).collect();
+        self.matches = scored.into_iter().take(limit).map(|(_, i)| ch[i].clone()).collect();
     }
 
     fn byte(&self) -> usize {
@@ -2986,6 +2988,26 @@ impl Editor {
             PKind::Run => self.run_now(&value),
             PKind::ProjFile => self.project_open(&value),
             PKind::ProjGrep => self.project_grep_now(&value),
+            PKind::ProjGrepResults { root, entries } => {
+                if let Some((_, LineMeta::Grep { path, line, .. })) =
+                    entries.iter().find(|(label, _)| label == &value)
+                {
+                    if let Some(grep_index) = self
+                        .bufs
+                        .iter()
+                        .rposition(|buffer| buffer.name == "*grep*" && buffer.kind == BufKind::Grep)
+                    {
+                        if let Some(result_line) = self.bufs[grep_index].meta.iter().position(|meta| {
+                            matches!(meta, LineMeta::Grep { path: result_path, line: result_number, .. }
+                                if result_path == path && result_number == line)
+                        }) {
+                            self.bufs[grep_index].cursor = Pos::new(result_line, 0);
+                            self.grep_fresh = false;
+                        }
+                    }
+                    self.visit_file_line(&root.join(path), *line);
+                }
+            }
             PKind::QrFrom => {
                 if value.is_empty() {
                     self.say("Quit");
