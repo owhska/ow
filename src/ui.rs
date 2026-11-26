@@ -983,7 +983,7 @@ pub fn render(frame: &mut Frame, editor: &mut Editor) {
 
     match &editor.mode {
         Mode::Prompt(prompt) => {
-            let popup_prompt = prompt.choices.is_some();
+            let popup_prompt = prompt.choices.is_some() && !matches!(&prompt.kind, PKind::Command);
             let head = format!("{}{}", prompt.label, prompt.input);
             let popup_cursor = if popup_prompt {
                 render_prompt_results_popup(frame_buffer, area, echo_y, prompt)
