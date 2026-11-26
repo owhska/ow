@@ -35,7 +35,7 @@ Emacs-style functionality for operations outside Vim's navigation and modal edit
 - Quit: `C-x C-c` or `M-q` (prompts if file buffers have unsaved changes).
 - `M-x` with fuzzy command completion.
 - Windows: `C-x 2` split below, `C-x 3` split right, `C-x 1` delete other windows, `C-x 0` close current window, `C-x o` switch window.
-- Auto-indent, `M-;` comment toggle, `TAB` / `S-TAB` indent/unindent. In Insert mode, code completion suggests identifiers from the current file, open buffers and project source files; `TAB` / `S-TAB` previews suggestions, `RET` inserts a newline, and `ESC` cancels.
+- Auto-indent, `M-;` comment toggle, `TAB` / `S-TAB` indent/unindent. In Insert mode, code completion suggests identifiers from the current file, open buffers and project source files; `TAB` / `S-TAB` previews suggestions, `RET` inserts a newline, and `ESC` closes suggestions while keeping the preview.
 - Tab-vs-space detection, CRLF preservation, bracketed paste, OSC 52 clipboard, auto-revert of unmodified buffers.
 
 `C-h b` lists the available key bindings.
@@ -102,7 +102,7 @@ The current mode is displayed in the status line. Vim motions and operators are 
 
 - `ESC` / `C-[` returns to Normal mode.
 - `RET` inserts a newline with auto-indent.
-- Contextual identifier suggestions use the current file, open buffers, project source files and built-in language words (including Python, Rust, JavaScript/TypeScript, C/C++ and Go), with a generic programming vocabulary for other languages. `TAB` / `S-TAB` previews the next / previous suggestion directly in the text; `RET` always inserts a newline. `ESC` cancels the preview and returns to Normal mode.
+- Contextual identifier suggestions use the current file, open buffers, project source files and built-in language words (including Python, Rust, JavaScript/TypeScript, C/C++ and Go), with a generic programming vocabulary for other languages. `TAB` / `S-TAB` previews the next / previous suggestion directly in the text; `RET` always inserts a newline. `ESC` closes suggestions while keeping the preview, then returns to Normal mode.
 - Without suggestions, `TAB` / `S-TAB` indents / unindents.
 - Automatic pairing for `()`, `{}`, `[]`, `""`, `''` and `<>`.
 

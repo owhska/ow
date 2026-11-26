@@ -162,7 +162,7 @@ fn insert_completion_can_choose_another_local_suggestion() {
 }
 
 #[test]
-fn insert_completion_is_cancelled_by_escape() {
+fn insert_completion_escape_keeps_preview_and_closes_suggestions() {
     let dir = tmpdir("cancel-completion");
     let mut e = editor_in(&dir);
     e.buf_mut().kind = BufKind::File;
@@ -177,7 +177,7 @@ fn insert_completion_is_cancelled_by_escape() {
 
     assert!(e.completion.items.is_empty());
     assert_eq!(e.vim_mode, VimMode::Normal);
-    assert_eq!(e.buf().lines[1], "cont");
+    assert_eq!(e.buf().lines[1], preview);
 }
 
 #[test]

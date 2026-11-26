@@ -203,7 +203,7 @@ impl Editor {
         if self.vim_replace_mode {
             match n {
                 "ESC" | "C-[" => {
-                    self.cancel_completion();
+                    self.completion.clear();
                     self.vim_replace_mode = false;
                     self.vim_mode = VimMode::Normal;
                     if self.vim_recording_insert {
@@ -236,7 +236,7 @@ impl Editor {
 
         match n {
             "ESC" | "C-[" => {
-                self.cancel_completion();
+                self.completion.clear();
                 self.vim_mode = VimMode::Normal;
                 self.vim_multi_cursors.clear();
                 if self.vim_recording_insert {

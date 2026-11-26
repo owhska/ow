@@ -2075,20 +2075,6 @@ impl Editor {
         self.completion.preview = Some(candidate);
     }
 
-    fn cancel_completion(&mut self) {
-        if let (Some((start, end)), Some(original), Some(cursor)) = (
-            self.completion.range,
-            self.completion.original.clone(),
-            self.completion.original_cursor,
-        ) {
-            let buffer = self.buf_mut();
-            buffer.delete(start, end);
-            buffer.insert(start, &original);
-            buffer.cursor = buffer.clamp(cursor);
-        }
-        self.completion.clear();
-    }
-
     fn update_completion(&mut self) {
         if self.completion.preview.is_some() {
             return;
