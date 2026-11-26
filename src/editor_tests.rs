@@ -87,6 +87,30 @@ fn insert_completion_uses_project_source_files() {
 }
 
 #[test]
+fn bash_completion_ignores_identifiers_from_other_languages() {
+    let dir = tmpdir("bash-completion-language");
+    let bash = dir.join("main.sh");
+    let helper = dir.join("helpers.sh");
+    let rust = dir.join("main.rs");
+    std::fs::write(&bash, "").unwrap();
+    std::fs::write(&helper, "echo_helper=1\n").unwrap();
+    std::fs::write(&rust, "fn main() { let echo_y = 1; }\n").unwrap();
+
+    let mut e = editor_in(&dir);
+    let bash_index = e.open_path(&bash).unwrap();
+    let rust_index = e.open_path(&rust).unwrap();
+    e.switch_to(bash_index);
+    keys(&mut e, "echo_");
+
+    assert!(e.completion.items.contains(&"echo_helper".to_string()));
+    assert!(!e.completion.items.contains(&"echo_y".to_string()));
+
+    e.switch_to(rust_index);
+    keys(&mut e, "echo_");
+    assert!(!e.completion.items.contains(&"echo_helper".to_string()));
+}
+
+#[test]
 fn python_completion_includes_editor_builtins_without_file_context() {
     let dir = tmpdir("python-builtins");
     let current = dir.join("main.py");

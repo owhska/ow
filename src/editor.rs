@@ -650,6 +650,7 @@ pub struct Editor {
     pub completion: Completion,
     completion_project_root: Option<PathBuf>,
     completion_project_stamp: Option<Instant>,
+    completion_project_language: String,
     completion_project_words: HashMap<String, usize>,
     pub auto_pair: bool,
     pub kill_ring: Vec<String>,
@@ -756,6 +757,7 @@ impl Editor {
             completion: Completion::new(),
             completion_project_root: None,
             completion_project_stamp: None,
+            completion_project_language: String::new(),
             completion_project_words: HashMap::new(),
             auto_pair: true,
             kill_ring: Vec::new(),
@@ -2109,6 +2111,7 @@ impl Editor {
         let range = (Pos::new(cursor.line, start), Pos::new(cursor.line, end));
         let keep_selection = self.completion.prefix == prefix && self.completion.range == Some(range);
         let previous_selection = self.completion.selected;
+        let current_language = self.buf().hl.name.clone();
 
         self.refresh_project_completion_words();
         let mut scores: HashMap<String, i32> = self
@@ -2127,7 +2130,9 @@ impl Editor {
         }
 
         for (index, candidate_buffer) in self.bufs.iter().enumerate() {
-            if candidate_buffer.kind != BufKind::File {
+            if candidate_buffer.kind != BufKind::File
+                || !candidate_buffer.hl.name.eq_ignore_ascii_case(&current_language)
+            {
                 continue;
             }
             let base_score = if index == self.cur { 1_000 } else { 300 };
@@ -2170,6 +2175,7 @@ impl Editor {
     }
 
     fn refresh_project_completion_words(&mut self) {
+        let language = self.buf().hl.name.clone();
         let repo = self.repo_here();
         let root = self
             .proj_root
@@ -2177,6 +2183,7 @@ impl Editor {
             .or_else(|| repo.as_ref().and_then(git::workdir))
             .unwrap_or_else(|| self.cwd.clone());
         let fresh = self.completion_project_root.as_ref() == Some(&root)
+            && self.completion_project_language == language
             && self
                 .completion_project_stamp
                 .is_some_and(|stamp| stamp.elapsed() < Duration::from_secs(10));
@@ -2192,7 +2199,7 @@ impl Editor {
         let mut bytes_read = 0usize;
         for relative_path in files
             .iter()
-            .filter(|path| is_completion_source(path))
+            .filter(|path| is_completion_source_for(path, &language))
             .take(1_000)
         {
             let path = root.join(relative_path);
@@ -2207,6 +2214,7 @@ impl Editor {
         }
         self.completion_project_root = Some(root);
         self.completion_project_stamp = Some(Instant::now());
+        self.completion_project_language = language;
         self.completion_project_words = words;
     }
 
@@ -3587,6 +3595,15 @@ fn is_completion_source(path: &str) -> bool {
             | "java" | "js" | "jsx" | "kt" | "lua" | "php" | "py" | "rb" | "rs"
             | "scala" | "sh" | "swift" | "ts" | "tsx" | "vue" | "zig"
     )
+}
+
+fn is_completion_source_for(path: &str, language: &str) -> bool {
+    if !is_completion_source(path) {
+        return false;
+    }
+    Highlighter::detect(Some(Path::new(path)), "")
+        .name
+        .eq_ignore_ascii_case(language)
 }
 
 include!("vim.rs");
