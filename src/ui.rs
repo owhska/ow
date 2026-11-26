@@ -733,6 +733,114 @@ fn render_completion_popup(
     buffer.set_string(x, y + panel_height - 1, bottom, border_style);
 }
 
+fn render_prompt_results_popup(
+    buffer: &mut ratatui::buffer::Buffer,
+    area: Rect,
+    echo_y: u16,
+    prompt: &Prompt,
+) -> Option<(u16, u16)> {
+    let count = prompt.matches.len();
+    let available_height = echo_y.saturating_sub(area.y) as usize;
+    if available_height < 4 || area.width < 8 {
+        return None;
+    }
+    let panel_width = ((area.width as usize * 7 / 10).max(24).min(area.width as usize)) as u16;
+    let panel_height = ((available_height * 6 / 10).max(6).min(available_height)) as u16;
+    if panel_height < 4 {
+        return None;
+    }
+    let rows = panel_height.saturating_sub(4) as usize;
+    let x = area.x.saturating_add(area.width.saturating_sub(panel_width) / 2);
+    let y = area.y.saturating_add((available_height as u16).saturating_sub(panel_height) / 2);
+
+    let border_style = Style::default().fg(c(DIM)).bg(c(LINE));
+    let body_style = Style::default().fg(c(FG)).bg(c(LINE));
+    let input_style = body_style.add_modifier(Modifier::BOLD);
+    let selected_style = menu_selected_style();
+    let inner_width = panel_width.saturating_sub(2) as usize;
+    let top = format!("┌{}┐", "─".repeat(inner_width));
+    let bottom = format!("└{}┘", "─".repeat(inner_width));
+    let separator = format!("├{}┤", "─".repeat(inner_width));
+    let field_width = inner_width.saturating_sub(2);
+    let field = format!("{}{}", prompt.label, prompt.input);
+    let field = truncate_display_width(&field, field_width);
+    buffer.set_string(x, y, top, border_style);
+    buffer.set_string(x, y + 1, "│", border_style);
+    buffer.set_string(x + 1, y + 1, " ".repeat(inner_width), body_style);
+    buffer.set_string(x + 2, y + 1, field, input_style);
+    buffer.set_string(x + panel_width - 1, y + 1, "│", border_style);
+    buffer.set_string(x, y + 2, separator, border_style);
+
+    let before_cursor: String = prompt.input.chars().take(prompt.cur).collect();
+    let cursor_offset = unicode_width::UnicodeWidthStr::width(prompt.label.as_str())
+        .saturating_add(unicode_width::UnicodeWidthStr::width(before_cursor.as_str()))
+        .min(field_width.saturating_sub(1)) as u16;
+    let input_cursor = Some((x + 2 + cursor_offset, y + 1));
+    let start = prompt
+        .sel
+        .saturating_sub(rows.saturating_sub(1))
+        .min(count.saturating_sub(rows));
+
+    for row in 0..rows {
+        let row_y = y + row as u16 + 3;
+        buffer.set_string(x, row_y, "│", border_style);
+        buffer.set_string(x + 1, row_y, " ".repeat(inner_width), body_style);
+        let index = start + row;
+        if index >= count {
+            if count == 0 && row == 0 {
+                buffer.set_string(x + 3, row_y, "No matching results", body_style);
+            }
+            buffer.set_string(x + panel_width - 1, row_y, "│", border_style);
+            continue;
+        }
+        let style = if index == prompt.sel { selected_style } else { body_style };
+        let text_width = inner_width.saturating_sub(2);
+        let item = truncate_display_width(&prompt.matches[index], text_width);
+        let marker = if index == prompt.sel { "> " } else { "  " };
+        let item_x = x + 3;
+        if let PKind::ProjGrepResults { entries, .. } = &prompt.kind {
+            if let Some((_, LineMeta::Grep { path, line, match_start, match_end })) =
+                entries.iter().find(|(label, _)| label == &prompt.matches[index])
+            {
+                let prefix = format!("{path}:{line}: ");
+                let chars: Vec<char> = item.chars().collect();
+                let start = prefix.chars().count().saturating_add(*match_start);
+                let end = prefix.chars().count().saturating_add(*match_end);
+                if start < end && end <= chars.len() {
+                    let before: String = chars[..start].iter().collect();
+                    let matched: String = chars[start..end].iter().collect();
+                    let after: String = chars[end..].iter().collect();
+                    let matched_width = unicode_width::UnicodeWidthStr::width(matched.as_str()) as u16;
+                    let match_x = item_x.saturating_add(
+                        unicode_width::UnicodeWidthStr::width(before.as_str()) as u16,
+                    );
+                    buffer.set_string(x + 1, row_y, marker, style);
+                    buffer.set_string(item_x, row_y, before, style);
+                    buffer.set_string(
+                        match_x,
+                        row_y,
+                        matched,
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(c(CONST))
+                            .add_modifier(Modifier::BOLD),
+                    );
+                    buffer.set_string(match_x + matched_width, row_y, after, style);
+                } else {
+                    buffer.set_string(x + 1, row_y, format!("{marker}{item}"), style);
+                }
+            } else {
+                buffer.set_string(x + 1, row_y, format!("{marker}{item}"), style);
+            }
+        } else {
+            buffer.set_string(x + 1, row_y, format!("{marker}{item}"), style);
+        }
+        buffer.set_string(x + panel_width - 1, row_y, "│", border_style);
+    }
+    buffer.set_string(x, y + panel_height - 1, bottom, border_style);
+    input_cursor
+}
+
 pub fn render(frame: &mut Frame, editor: &mut Editor) {
     let area = frame.area();
     let (width, height) = (area.width as usize, area.height as usize);
@@ -875,29 +983,35 @@ pub fn render(frame: &mut Frame, editor: &mut Editor) {
 
     match &editor.mode {
         Mode::Prompt(prompt) => {
+            let popup_prompt = prompt.choices.is_some() && !matches!(&prompt.kind, PKind::Command);
             let head = format!("{}{}", prompt.label, prompt.input);
+            let popup_cursor = if popup_prompt {
+                render_prompt_results_popup(frame_buffer, area, echo_y, prompt)
+            } else {
+                None
+            };
+            if let Some(position) = popup_cursor {
+                cursor = Some(position);
+            } else {
+                frame_buffer.set_string(
+                    0,
+                    echo_y,
+                    head.chars().take(width).collect::<String>(),
+                    Style::default(),
+                );
 
-            frame_buffer.set_string(
-                0,
-                echo_y,
-                head.chars().take(width).collect::<String>(),
-                Style::default(),
-            );
-
-            let label_width =
-                unicode_width::UnicodeWidthStr::width(prompt.label.as_str());
-
-            let input_width: usize = prompt
-                .input
-                .chars()
-                .take(prompt.cur)
-                .map(|c| c.width().unwrap_or(1))
-                .sum();
-
-            cursor = Some((
-                (label_width + input_width).min(width - 1) as u16,
-                echo_y,
-            ));
+                let label_width = unicode_width::UnicodeWidthStr::width(prompt.label.as_str());
+                let input_width: usize = prompt
+                    .input
+                    .chars()
+                    .take(prompt.cur)
+                    .map(|c| c.width().unwrap_or(1))
+                    .sum();
+                cursor = Some((
+                    (label_width + input_width).min(width - 1) as u16,
+                    echo_y,
+                ));
+            }
 
             let mut x =
                 unicode_width::UnicodeWidthStr::width(head.as_str()) + 2;
@@ -908,7 +1022,7 @@ pub fn render(frame: &mut Frame, editor: &mut Editor) {
                 &prompt.matches
             };
 
-            if x < width {
+            if x < width && !popup_prompt {
                 for (index, item) in items.iter().enumerate() {
                     let item_width =
                         unicode_width::UnicodeWidthStr::width(item.as_str());
@@ -1097,6 +1211,64 @@ mod tests {
         assert_eq!(frame[(3, 3)].symbol(), "┌");
         assert_eq!(frame[(6, 8)].symbol(), "i");
         assert_eq!(frame[(3, 9)].symbol(), "└");
+    }
+
+    #[test]
+    fn project_file_prompt_renders_results_in_popup() {
+        let prompt = Prompt::new(
+            "Find file: ",
+            PKind::ProjFile,
+            Some(vec!["src/main.rs".into(), "src/lib.rs".into()]),
+        )
+        .with_input("main");
+        let area = Rect::new(0, 0, 40, 12);
+        let mut frame = ratatui::buffer::Buffer::empty(area);
+
+        let _ = render_prompt_results_popup(&mut frame, area, 11, &prompt);
+
+        assert_eq!(frame[(6, 2)].symbol(), "┌");
+        assert_eq!(frame[(6, 7)].symbol(), "└");
+        assert!(frame.content().iter().any(|cell| cell.symbol() == "┌"));
+        let rendered = frame.content().iter().map(|cell| cell.symbol()).collect::<String>();
+        assert!(rendered.contains("Find file: main"));
+        assert!(rendered.contains("src/main.rs"));
+
+        let many_results = Prompt::new(
+            "Find file: ",
+            PKind::ProjFile,
+            Some((0..40).map(|index| format!("src/file{index}.rs")).collect()),
+        );
+        let mut many_frame = ratatui::buffer::Buffer::empty(area);
+        let _ = render_prompt_results_popup(&mut many_frame, area, 11, &many_results);
+        assert_eq!(many_frame[(6, 2)].symbol(), "┌");
+        assert_eq!(many_frame[(6, 7)].symbol(), "└");
+    }
+
+    #[test]
+    fn grep_results_popup_is_centered_and_highlights_the_match() {
+        let label = "src/main.rs:12: one needle here".to_string();
+        let meta = LineMeta::Grep {
+            path: "src/main.rs".into(),
+            line: 12,
+            match_start: 4,
+            match_end: 10,
+        };
+        let prompt = Prompt::new(
+            "Grep results: ",
+            PKind::ProjGrepResults {
+                root: ".".into(),
+                entries: vec![(label.clone(), meta)],
+            },
+            Some(vec![label]),
+        );
+        let area = Rect::new(0, 0, 80, 24);
+        let mut frame = ratatui::buffer::Buffer::empty(area);
+
+        let _ = render_prompt_results_popup(&mut frame, area, 23, &prompt);
+
+        assert_eq!(frame[(12, 5)].symbol(), "┌");
+        assert_eq!(frame[(35, 8)].symbol(), "n");
+        assert_eq!(frame[(35, 8)].style().bg, Some(c(CONST)));
     }
 
     #[test]

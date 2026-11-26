@@ -87,6 +87,30 @@ fn insert_completion_uses_project_source_files() {
 }
 
 #[test]
+fn bash_completion_ignores_identifiers_from_other_languages() {
+    let dir = tmpdir("bash-completion-language");
+    let bash = dir.join("main.sh");
+    let helper = dir.join("helpers.sh");
+    let rust = dir.join("main.rs");
+    std::fs::write(&bash, "").unwrap();
+    std::fs::write(&helper, "echo_helper=1\n").unwrap();
+    std::fs::write(&rust, "fn main() { let echo_y = 1; }\n").unwrap();
+
+    let mut e = editor_in(&dir);
+    let bash_index = e.open_path(&bash).unwrap();
+    let rust_index = e.open_path(&rust).unwrap();
+    e.switch_to(bash_index);
+    keys(&mut e, "echo_");
+
+    assert!(e.completion.items.contains(&"echo_helper".to_string()));
+    assert!(!e.completion.items.contains(&"echo_y".to_string()));
+
+    e.switch_to(rust_index);
+    keys(&mut e, "echo_");
+    assert!(!e.completion.items.contains(&"echo_helper".to_string()));
+}
+
+#[test]
 fn python_completion_includes_editor_builtins_without_file_context() {
     let dir = tmpdir("python-builtins");
     let current = dir.join("main.py");
@@ -265,6 +289,8 @@ fn selecting_home_directory_updates_spc_x_search_root() {
     std::fs::create_dir(&hidden_child).unwrap();
     std::fs::create_dir(&config_dir).unwrap();
     std::fs::create_dir(&config_hidden_child).unwrap();
+    std::fs::write(selected.join("workspace.txt"), "outside selected base\n").unwrap();
+    std::fs::write(selected_child.join("child.txt"), "inside selected base\n").unwrap();
 
     let mut e = editor_in(&initial);
     e.start_prompt(Prompt::new(
@@ -284,6 +310,7 @@ fn selecting_home_directory_updates_spc_x_search_root() {
         let Mode::Prompt(prompt) = &e.mode else {
             panic!("SPC x should open the directory picker");
         };
+        assert!(matches!(&prompt.kind, PKind::SelectDirectory));
         let choices = prompt.choices.as_ref().unwrap();
         assert!(choices.contains(&selected_child.display().to_string()));
         assert!(choices.contains(&config_dir.display().to_string()));
@@ -303,11 +330,21 @@ fn selecting_home_directory_updates_spc_x_search_root() {
     assert_eq!(e.cwd, selected);
     assert!(matches!(e.buf().kind, BufKind::Dired));
 
+    keys(&mut e, "SPC f");
+    let Mode::Prompt(prompt) = &e.mode else {
+        panic!("SPC f should open the project file picker");
+    };
+    let choices = prompt.choices.as_ref().unwrap();
+    assert!(choices.contains(&"child.txt".to_string()));
+    assert!(!choices.contains(&"workspace.txt".to_string()));
+    keys(&mut e, "ESC");
+
     keys(&mut e, "SPC x");
     let Mode::Prompt(prompt) = &e.mode else {
         panic!("SPC x should continue using the selected workspace root");
     };
     let choices = prompt.choices.as_ref().unwrap();
+    assert!(choices.contains(&selected_child.display().to_string()));
     assert!(choices.contains(&config_dir.display().to_string()));
     assert!(choices.contains(&nested_child.display().to_string()));
     assert!(!choices.contains(&initial_child.display().to_string()));
@@ -528,10 +565,20 @@ fn git_workflow_through_the_editor() {
     keys(&mut e, "C-x p f b.rs RET");
     assert_eq!(e.buf().name, "b.rs");
     keys(&mut e, "C-x p g t w o RET");
-    assert_eq!(e.buf().kind, BufKind::Grep);
-    assert!(e.buf().lines.iter().any(|l| l.starts_with("a.txt:2:")), "{:?}", e.buf().lines);
+    assert_eq!(e.buf().name, "b.rs");
+    let Mode::Prompt(prompt) = &e.mode else {
+        panic!("grep results should open as a selection popup");
+    };
+    assert!(matches!(&prompt.kind, PKind::ProjGrepResults { .. }));
+    assert!(prompt.matches.iter().any(|result| result.starts_with("a.txt:2:")));
+
+    keys(&mut e, "RET");
+    assert_eq!(e.buf().name, "a.txt");
+    assert_eq!(e.buf().cursor.line, 1);
+    let grep_buffer = e.bufs.iter().find(|buffer| buffer.kind == BufKind::Grep).unwrap();
+    assert!(grep_buffer.lines.iter().any(|line| line.starts_with("a.txt:2:")));
     assert!(matches!(
-        e.buf().meta.get(2),
+        grep_buffer.meta.get(2),
         Some(LineMeta::Grep { match_start: 0, match_end: 3, .. })
     ));
     keys(&mut e, "M-g n");
@@ -849,6 +896,29 @@ fn vim_linewise_count_and_gg_g() {
     assert_eq!(e.buf().cursor.line, 1);
 }
 
+#[test]
+fn vim_j_and_k_preserve_the_desired_column() {
+    let dir = tmpdir("vim-vertical-column");
+    let mut e = editor_in(&dir);
+    e.buf_mut().set_text("012345\n12\n012345\n012345");
+    e.vim_mode = VimMode::Normal;
+    e.buf_mut().cursor = Pos::new(0, 4);
+    e.buf_mut().goal = Some(0);
+
+    keys(&mut e, "j");
+    assert_eq!(e.buf().cursor, Pos::new(1, 2));
+    keys(&mut e, "j");
+    assert_eq!(e.buf().cursor, Pos::new(2, 4));
+    keys(&mut e, "k");
+    assert_eq!(e.buf().cursor, Pos::new(1, 2));
+    keys(&mut e, "k");
+    assert_eq!(e.buf().cursor, Pos::new(0, 4));
+
+    keys(&mut e, "l j j");
+    assert_eq!(e.buf().cursor, Pos::new(2, 5));
+    std::fs::remove_dir_all(dir).ok();
+}
+
 
 #[test]
 fn vim_repeat_last_insert_replays_inserted_text() {
@@ -959,6 +1029,38 @@ fn vim_leader_f_matches_project_find_file() {
     e.vim_mode = VimMode::Normal;
     keys(&mut e, "SPC b m");
     assert!(e.vim_pending.is_empty(), "pending: {:?}", e.vim_pending);
+}
+
+#[test]
+fn project_search_uses_working_subdirectory_inside_git_repository() {
+    let root = tmpdir("project-search-git-subdir");
+    let selected = root.join("selected");
+    std::fs::create_dir(&selected).unwrap();
+    std::fs::write(selected.join("inside.txt"), "needle inside\n").unwrap();
+    std::fs::write(root.join("outside.txt"), "needle outside\n").unwrap();
+    let _repo = git2::Repository::init(&root).unwrap();
+
+    let mut e = editor_in(&selected);
+    let outside_index = e.open_path(&root.join("outside.txt")).unwrap();
+    e.switch_to(outside_index);
+    e.vim_mode = VimMode::Normal;
+
+    keys(&mut e, "SPC f");
+    let Mode::Prompt(prompt) = &e.mode else {
+        panic!("SPC f should open the project file picker");
+    };
+    let choices = prompt.choices.as_ref().unwrap();
+    assert!(choices.contains(&"inside.txt".to_string()));
+    assert!(!choices.contains(&"outside.txt".to_string()));
+    keys(&mut e, "ESC");
+
+    keys(&mut e, "SPC SPC needle RET");
+    let Mode::Prompt(prompt) = &e.mode else {
+        panic!("grep results should open as a selection popup");
+    };
+    assert!(prompt.matches.iter().any(|result| result.starts_with("inside.txt:")));
+    assert!(!prompt.matches.iter().any(|result| result.starts_with("outside.txt:")));
+    std::fs::remove_dir_all(root).ok();
 }
 
 #[test]
@@ -1413,29 +1515,16 @@ fn mouse_scroll_does_not_change_focus_and_scrolls_hovered_window() {
 }
 
 #[test]
-fn mouse_selects_and_opens_grep_results() {
-    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
-
+fn grep_popup_opens_selected_result() {
     let dir = tmpdir("mouse-grep-result");
     std::fs::write(dir.join("a.txt"), "skip\nneedle here\n").unwrap();
     let mut e = editor_in(&dir);
     e.screen_w = 80;
     e.screen_h = 24;
     keys(&mut e, "C-x p g needle RET");
-    assert_eq!(e.buf().kind, BufKind::Grep);
-    let result_line = e.buf().meta.iter().position(|meta| matches!(meta, LineMeta::Grep { .. })).unwrap();
-
-    let click = MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: 5,
-        row: result_line as u16,
-        modifiers: KeyModifiers::NONE,
-    };
-    e.on_mouse(click);
-    assert_eq!(e.buf().cursor.line, result_line);
-    assert_eq!(e.buf().kind, BufKind::Grep);
-
-    e.on_mouse(click);
+    assert_eq!(e.buf().kind, BufKind::File);
+    assert!(matches!(e.mode, Mode::Prompt(_)));
+    keys(&mut e, "RET");
     assert_eq!(e.buf().path.as_deref(), Some(dir.join("a.txt").as_path()));
     assert_eq!(e.buf().cursor.line, 1);
     std::fs::remove_dir_all(dir).ok();

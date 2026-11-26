@@ -28,6 +28,8 @@ pub enum PKind {
     Run,
     ProjFile,
     ProjGrep,
+    ProjGrepResults { root: PathBuf, entries: Vec<(String, LineMeta)> },
+    SelectDirectory,
     QrFrom,
     QrTo(String),
     SearchHistory,
@@ -84,9 +86,10 @@ impl Prompt {
         self.sel = 0;
         self.hint.clear();
         let Some(ch) = &self.choices else { return };
+        let limit = if matches!(&self.kind, PKind::ProjGrepResults { .. }) { 3000 } else { 200 };
         let q = self.input.to_lowercase();
         if q.trim().is_empty() {
-            self.matches = ch.iter().take(200).cloned().collect();
+            self.matches = ch.iter().take(limit).cloned().collect();
             return;
         }
         let tokens: Vec<&str> = q.split_whitespace().collect();
@@ -109,7 +112,7 @@ impl Prompt {
             }
         }
         scored.sort_by(|a, b| b.0.cmp(&a.0).then(ch[a.1].len().cmp(&ch[b.1].len())));
-        self.matches = scored.into_iter().take(200).map(|(_, i)| ch[i].clone()).collect();
+        self.matches = scored.into_iter().take(limit).map(|(_, i)| ch[i].clone()).collect();
     }
 
     fn byte(&self) -> usize {
@@ -627,6 +630,7 @@ pub struct Editor {
     pub project_tree_open: bool,
     pub project_tree_focused: bool,
     pub vim_mode: VimMode,
+    vim_goal_col: Option<usize>,
     pub last_click: Option<(Instant, usize, usize)>,
     pub vim_pending: String,
     pub vim_op: Option<char>,
@@ -647,6 +651,7 @@ pub struct Editor {
     pub completion: Completion,
     completion_project_root: Option<PathBuf>,
     completion_project_stamp: Option<Instant>,
+    completion_project_language: String,
     completion_project_words: HashMap<String, usize>,
     pub auto_pair: bool,
     pub kill_ring: Vec<String>,
@@ -665,6 +670,7 @@ pub struct Editor {
     pub auto_indent: bool,
     pub cwd: PathBuf,
     pub proj_root: Option<PathBuf>,
+    search_root: Option<PathBuf>,
     pub last_search: String,
     pub last_search_forward: bool,
     pub recent_files: Vec<PathBuf>,
@@ -733,6 +739,7 @@ impl Editor {
             project_tree_open: false,
             project_tree_focused: false,
             vim_mode: VimMode::Normal,
+            vim_goal_col: None,
             last_click: None,
             vim_pending: String::new(),
             vim_op: None,
@@ -753,6 +760,7 @@ impl Editor {
             completion: Completion::new(),
             completion_project_root: None,
             completion_project_stamp: None,
+            completion_project_language: String::new(),
             completion_project_words: HashMap::new(),
             auto_pair: true,
             kill_ring: Vec::new(),
@@ -772,6 +780,7 @@ impl Editor {
             auto_indent: true,
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             proj_root: None,
+            search_root: None,
             last_search: String::new(),
             last_search_forward: true,
             recent_files: Vec::new(),
@@ -842,6 +851,7 @@ impl Editor {
 
     pub fn switch_to(&mut self, idx: usize) {
         if idx != self.cur {
+            self.vim_goal_col = None;
             self.prev_cur = Some(self.cur);
             self.search_highlight = None;
         }
@@ -2106,6 +2116,7 @@ impl Editor {
         let range = (Pos::new(cursor.line, start), Pos::new(cursor.line, end));
         let keep_selection = self.completion.prefix == prefix && self.completion.range == Some(range);
         let previous_selection = self.completion.selected;
+        let current_language = self.buf().hl.name.clone();
 
         self.refresh_project_completion_words();
         let mut scores: HashMap<String, i32> = self
@@ -2124,7 +2135,9 @@ impl Editor {
         }
 
         for (index, candidate_buffer) in self.bufs.iter().enumerate() {
-            if candidate_buffer.kind != BufKind::File {
+            if candidate_buffer.kind != BufKind::File
+                || !candidate_buffer.hl.name.eq_ignore_ascii_case(&current_language)
+            {
                 continue;
             }
             let base_score = if index == self.cur { 1_000 } else { 300 };
@@ -2167,6 +2180,7 @@ impl Editor {
     }
 
     fn refresh_project_completion_words(&mut self) {
+        let language = self.buf().hl.name.clone();
         let repo = self.repo_here();
         let root = self
             .proj_root
@@ -2174,6 +2188,7 @@ impl Editor {
             .or_else(|| repo.as_ref().and_then(git::workdir))
             .unwrap_or_else(|| self.cwd.clone());
         let fresh = self.completion_project_root.as_ref() == Some(&root)
+            && self.completion_project_language == language
             && self
                 .completion_project_stamp
                 .is_some_and(|stamp| stamp.elapsed() < Duration::from_secs(10));
@@ -2189,7 +2204,7 @@ impl Editor {
         let mut bytes_read = 0usize;
         for relative_path in files
             .iter()
-            .filter(|path| is_completion_source(path))
+            .filter(|path| is_completion_source_for(path, &language))
             .take(1_000)
         {
             let path = root.join(relative_path);
@@ -2204,6 +2219,7 @@ impl Editor {
         }
         self.completion_project_root = Some(root);
         self.completion_project_stamp = Some(Instant::now());
+        self.completion_project_language = language;
         self.completion_project_words = words;
     }
 
@@ -2346,10 +2362,12 @@ impl Editor {
     fn handle_vim_page_key(&mut self, name: &str) -> bool {
         match name {
             "C-b" | "C-u" => {
+                self.vim_goal_col = None;
                 self.scroll_up();
                 true
             }
             "C-d" => {
+                self.vim_goal_col = None;
                 self.scroll_down();
                 true
             }
@@ -2358,6 +2376,7 @@ impl Editor {
     }
 
     pub fn on_paste(&mut self, s: &str) {
+        self.vim_goal_col = None;
         let s = s.replace("\r\n", "\n").replace('\r', "\n");
         match &mut self.mode {
             Mode::Prompt(p) => {
@@ -2386,6 +2405,7 @@ impl Editor {
         use ratatui::crossterm::event::{MouseButton, MouseEventKind};
         use ratatui::layout::Rect;
 
+        self.vim_goal_col = None;
         if self.screen_w == 0 || self.screen_h <= 1 {
             return;
         }
@@ -2946,6 +2966,29 @@ impl Editor {
                     }
                 }
             }
+            PKind::SelectDirectory => {
+                if let Some(i) = self.bufs.iter().position(|b| b.name == value) {
+                    self.switch_to(i);
+                    if self.buf().kind == BufKind::Dired {
+                        self.search_root = self.buf().path.clone();
+                    }
+                } else {
+                    let path = self.norm_path(value.trim());
+                    match std::fs::canonicalize(&path) {
+                        Ok(path) if path.is_dir() => {
+                            self.open_dir(&path);
+                            if self.buf().kind == BufKind::Dired
+                                && self.buf().path.as_deref() == Some(path.as_path())
+                            {
+                                self.search_root = Some(path.clone());
+                                self.say(format!("Search base: {}", path.display()));
+                            }
+                        }
+                        _ if path.exists() => self.find_file(value.trim()),
+                        _ => self.say(format!("No such path: {value}")),
+                    }
+                }
+            }
             PKind::WorkspaceDirectory => {
                 let path = self.norm_path(value.trim());
                 match std::fs::canonicalize(&path) {
@@ -2956,6 +2999,7 @@ impl Editor {
                         {
                             self.cwd = path.clone();
                             self.proj_root = None;
+                            self.search_root = Some(path.clone());
                             self.say(format!("Base directory: {}", path.display()));
                         }
                     }
@@ -2986,6 +3030,26 @@ impl Editor {
             PKind::Run => self.run_now(&value),
             PKind::ProjFile => self.project_open(&value),
             PKind::ProjGrep => self.project_grep_now(&value),
+            PKind::ProjGrepResults { root, entries } => {
+                if let Some((_, LineMeta::Grep { path, line, .. })) =
+                    entries.iter().find(|(label, _)| label == &value)
+                {
+                    if let Some(grep_index) = self
+                        .bufs
+                        .iter()
+                        .rposition(|buffer| buffer.name == "*grep*" && buffer.kind == BufKind::Grep)
+                    {
+                        if let Some(result_line) = self.bufs[grep_index].meta.iter().position(|meta| {
+                            matches!(meta, LineMeta::Grep { path: result_path, line: result_number, .. }
+                                if result_path == path && result_number == line)
+                        }) {
+                            self.bufs[grep_index].cursor = Pos::new(result_line, 0);
+                            self.grep_fresh = false;
+                        }
+                    }
+                    self.visit_file_line(&root.join(path), *line);
+                }
+            }
             PKind::QrFrom => {
                 if value.is_empty() {
                     self.say("Quit");
@@ -3564,6 +3628,15 @@ fn is_completion_source(path: &str) -> bool {
             | "java" | "js" | "jsx" | "kt" | "lua" | "php" | "py" | "rb" | "rs"
             | "scala" | "sh" | "swift" | "ts" | "tsx" | "vue" | "zig"
     )
+}
+
+fn is_completion_source_for(path: &str, language: &str) -> bool {
+    if !is_completion_source(path) {
+        return false;
+    }
+    Highlighter::detect(Some(Path::new(path)), "")
+        .name
+        .eq_ignore_ascii_case(language)
 }
 
 include!("vim.rs");

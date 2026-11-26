@@ -566,13 +566,31 @@ impl Editor {
 
     // ----------------------------------------------------------- project
     fn project_root_and_files(&mut self) -> (PathBuf, Vec<String>) {
-        match self.repo_here() {
-            Some(r) => {
-                let root = git::workdir(&r).unwrap_or_else(|| self.cwd.clone());
-                (root, git::project_files(&r))
+        let root = self.search_root.clone().unwrap_or_else(|| self.cwd.clone());
+        if let Some(repo) = git::open(&root) {
+            if let Some(repo_root) = git::workdir(&repo) {
+                if let Ok(relative_root) = root.strip_prefix(&repo_root) {
+                    let mut files: Vec<String> = git::project_files(&repo)
+                        .into_iter()
+                        .filter_map(|file| {
+                            let path = Path::new(&file);
+                            let relative = if relative_root.as_os_str().is_empty() {
+                                path
+                            } else {
+                                path.strip_prefix(relative_root).ok()?
+                            };
+                            (!relative.as_os_str().is_empty())
+                                .then(|| relative.to_string_lossy().replace('\\', "/"))
+                        })
+                        .collect();
+                    files.sort();
+                    files.dedup();
+                    return (root, files);
+                }
             }
-            None => (self.cwd.clone(), git::walk_files(&self.cwd, 50_000)),
         }
+        let files = git::walk_files(&root, 50_000);
+        (root, files)
     }
 
     fn project_find_file(&mut self) {
@@ -587,7 +605,7 @@ impl Editor {
     }
 
     fn project_open(&mut self, rel: &str) {
-        let root = self.proj_root.clone().unwrap_or_else(|| self.cwd.clone());
+        let root = self.search_root.clone().unwrap_or_else(|| self.cwd.clone());
         let p = root.join(rel);
         self.find_file(&p.to_string_lossy());
     }
@@ -685,6 +703,7 @@ impl Editor {
 
         let mut t = format!("Grep for /{pat}/ in {}\n\n", root.display());
         let mut m = vec![LineMeta::None, LineMeta::None];
+        let mut popup_entries = Vec::new();
         let mut count = 0;
         let mut nfiles = 0;
         'results: for chunk in result_chunks {
@@ -694,13 +713,16 @@ impl Editor {
                 }
                 nfiles += 1;
                 for (line, shown, match_start, match_end) in hits {
-                    t.push_str(&format!("{file}:{line}: {shown}\n"));
-                    m.push(LineMeta::Grep {
+                    let label = format!("{file}:{line}: {shown}");
+                    t.push_str(&format!("{label}\n"));
+                    let meta = LineMeta::Grep {
                         path: file.clone(),
                         line,
                         match_start,
                         match_end,
-                    });
+                    };
+                    popup_entries.push((label, meta.clone()));
+                    m.push(meta);
                     count += 1;
                     if count >= 3000 {
                         t.push_str("... (truncated at 3000 matches)\n");
@@ -714,11 +736,19 @@ impl Editor {
             self.say(format!("No matches for /{pat}/"));
             return;
         }
+        let previous_buffer = self.cur;
         self.open_special("*grep*", BufKind::Grep, &t, m, false);
         self.grep_fresh = true;
-        let b = self.buf_mut();
-        b.cursor = Pos::new(2, 0);
-        self.say(format!("{count} matches in {nfiles} files (RET visits, M-g n next)"));
+        let grep_index = self.cur;
+        self.bufs[grep_index].cursor = Pos::new(2, 0);
+        self.switch_to(previous_buffer);
+        let choices = popup_entries.iter().map(|(label, _)| label.clone()).collect();
+        let label = format!("Grep {count} in {nfiles} files: ");
+        self.start_prompt(Prompt::new(
+            &label,
+            PKind::ProjGrepResults { root, entries: popup_entries },
+            Some(choices),
+        ));
     }
 
     fn next_error(&mut self, down: bool) {
