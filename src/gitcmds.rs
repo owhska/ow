@@ -528,29 +528,95 @@ impl Editor {
 
     // ------------------------------------------------------ remote ops
     fn git_pull(&mut self) {
-        let Some(repo) = self.need_repo() else { return };
-        match git::pull(&repo) {
-            Ok(m) => {
-                let n = self.revert_unmodified();
-                self.mark_all_marks_stale();
-                self.refresh_git_info();
-                self.refresh_status_buf();
-                self.say(if n > 0 { format!("{m} ({n} buffer(s) reloaded)") } else { m });
-            }
-            Err(e) => self.gerr("pull", e),
-        }
+        self.start_git_operation(GitOperation::Pull);
     }
 
     fn git_push(&mut self) {
+        self.start_git_operation(GitOperation::Push);
+    }
+
+    fn start_git_operation(&mut self, operation: GitOperation) {
+        if self.git_op_rx.is_some() {
+            self.say("A Git network operation is already running");
+            return;
+        }
         let Some(repo) = self.need_repo() else { return };
-        match git::push(&repo) {
-            Ok(m) => {
+        let root = repo.workdir().unwrap_or_else(|| repo.path()).to_path_buf();
+        let (sender, receiver) = mpsc::channel();
+        self.git_op_rx = Some(receiver);
+        self.git_op_kind = Some(operation);
+        self.git_op_started = Some(Instant::now());
+        self.git_op_frame = 0;
+        self.say(match operation {
+            GitOperation::Pull => "Git pull started...",
+            GitOperation::Push => "Git push started...",
+        });
+        std::thread::spawn(move || {
+            let result = git2::Repository::open(root)
+                .map_err(|error| error.message().to_string())
+                .and_then(|repo| match operation {
+                    GitOperation::Pull => git::pull(&repo).map_err(|error| error.message().to_string()),
+                    GitOperation::Push => git::push(&repo).map_err(|error| error.message().to_string()),
+                });
+            let _ = sender.send(result);
+        });
+    }
+
+    fn poll_git_operation(&mut self) -> bool {
+        let result = match self.git_op_rx.as_ref().map(Receiver::try_recv) {
+            Some(Ok(result)) => result,
+            Some(Err(TryRecvError::Disconnected)) => {
+                Err("Git operation ended unexpectedly".to_string())
+            }
+            Some(Err(TryRecvError::Empty)) | None => return false,
+        };
+        let Some(operation) = self.git_op_kind.take() else {
+            self.git_op_rx = None;
+            self.git_op_started = None;
+            self.say("Git operation state was lost");
+            return true;
+        };
+        self.git_op_rx = None;
+        self.git_op_started = None;
+        match (operation, result) {
+            (GitOperation::Pull, Ok(message)) => {
+                let reloaded = self.revert_unmodified();
+                self.mark_all_marks_stale();
                 self.refresh_git_info();
                 self.refresh_status_buf();
-                self.say(m);
+                self.say(if reloaded > 0 {
+                    format!("{message} ({reloaded} buffer(s) reloaded)")
+                } else {
+                    message
+                });
             }
-            Err(e) => self.gerr("push", e),
+            (GitOperation::Push, Ok(message)) => {
+                self.refresh_git_info();
+                self.refresh_status_buf();
+                self.say(message);
+            }
+            (GitOperation::Pull, Err(error)) => self.say(format!("git pull: {error}")),
+            (GitOperation::Push, Err(error)) => self.say(format!("git push: {error}")),
         }
+        true
+    }
+
+    fn update_git_operation_status(&mut self) -> bool {
+        let Some(started) = self.git_op_started else { return false };
+        let elapsed = started.elapsed();
+        let frame = (elapsed.as_millis() / 200) as usize;
+        if frame == self.git_op_frame {
+            return false;
+        }
+        self.git_op_frame = frame;
+        let Some(operation) = self.git_op_kind else { return false };
+        let label = match operation {
+            GitOperation::Pull => "Pulling",
+            GitOperation::Push => "Pushing",
+        };
+        let spinner = ['|', '/', '-', '\\'][frame % 4];
+        self.msg = format!("{label} {spinner} ({:.1}s)", elapsed.as_secs_f64());
+        true
     }
 
     fn git_init(&mut self) {

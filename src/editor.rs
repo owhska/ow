@@ -45,6 +45,12 @@ enum RunEvent {
     Finished(Result<ExitStatus, String>, bool),
 }
 
+#[derive(Clone, Copy)]
+enum GitOperation {
+    Pull,
+    Push,
+}
+
 pub struct Prompt {
     pub label: String,
     pub input: String,
@@ -680,6 +686,10 @@ pub struct Editor {
     pub command_history: Vec<String>,
     pub run_command: String,
     run_rx: Option<Receiver<RunEvent>>,
+    git_op_rx: Option<Receiver<Result<String, String>>>,
+    git_op_kind: Option<GitOperation>,
+    git_op_started: Option<Instant>,
+    git_op_frame: usize,
     run_stop_tx: Option<Sender<()>>,
     run_stopping: bool,
     run_dir: Option<PathBuf>,
@@ -790,6 +800,10 @@ impl Editor {
             command_history: Vec::new(),
             run_command: String::new(),
             run_rx: None,
+            git_op_rx: None,
+            git_op_kind: None,
+            git_op_started: None,
+            git_op_frame: 0,
             run_stop_tx: None,
             run_stopping: false,
             run_dir: None,
@@ -1980,13 +1994,19 @@ impl Editor {
     /// Idle work. Returns true when the screen needs a redraw.
     pub fn tick(&mut self) -> bool {
         let mut redraw = self.poll_run();
+        redraw |= self.poll_git_operation();
+        redraw |= self.update_git_operation_status();
         redraw |= self.update_run_elapsed();
         let b = self.buf();
-        if b.kind == BufKind::File && b.path.is_some() && b.git_marks_version != b.version {
+        if self.git_op_rx.is_none()
+            && b.kind == BufKind::File
+            && b.path.is_some()
+            && b.git_marks_version != b.version
+        {
             self.refresh_marks();
             redraw = true;
         }
-        if self.git_stamp.elapsed().as_secs() >= 5 {
+        if self.git_op_rx.is_none() && self.git_stamp.elapsed().as_secs() >= 5 {
             self.refresh_git_info();
             redraw = true;
         }
@@ -2004,6 +2024,9 @@ impl Editor {
 
     // ---------------------------------------------------------- key input
     pub fn on_key(&mut self, ev: KeyEvent) {
+        if self.git_op_rx.is_some() {
+            return;
+        }
         let Some(key) = keys::parse(&ev) else { return };
         if self.completion.preview.is_some()
             && !matches!(key.name.as_str(), "TAB" | "S-TAB" | "RET" | "ESC" | "C-[")
@@ -2376,6 +2399,9 @@ impl Editor {
     }
 
     pub fn on_paste(&mut self, s: &str) {
+        if self.git_op_rx.is_some() {
+            return;
+        }
         self.vim_goal_col = None;
         let s = s.replace("\r\n", "\n").replace('\r', "\n");
         match &mut self.mode {
@@ -2405,6 +2431,9 @@ impl Editor {
         use ratatui::crossterm::event::{MouseButton, MouseEventKind};
         use ratatui::layout::Rect;
 
+        if self.git_op_rx.is_some() {
+            return;
+        }
         self.vim_goal_col = None;
         if self.screen_w == 0 || self.screen_h <= 1 {
             return;
