@@ -566,13 +566,31 @@ impl Editor {
 
     // ----------------------------------------------------------- project
     fn project_root_and_files(&mut self) -> (PathBuf, Vec<String>) {
-        match self.repo_here() {
-            Some(r) => {
-                let root = git::workdir(&r).unwrap_or_else(|| self.cwd.clone());
-                (root, git::project_files(&r))
+        let root = self.search_root.clone().unwrap_or_else(|| self.cwd.clone());
+        if let Some(repo) = git::open(&root) {
+            if let Some(repo_root) = git::workdir(&repo) {
+                if let Ok(relative_root) = root.strip_prefix(&repo_root) {
+                    let mut files: Vec<String> = git::project_files(&repo)
+                        .into_iter()
+                        .filter_map(|file| {
+                            let path = Path::new(&file);
+                            let relative = if relative_root.as_os_str().is_empty() {
+                                path
+                            } else {
+                                path.strip_prefix(relative_root).ok()?
+                            };
+                            (!relative.as_os_str().is_empty())
+                                .then(|| relative.to_string_lossy().replace('\\', "/"))
+                        })
+                        .collect();
+                    files.sort();
+                    files.dedup();
+                    return (root, files);
+                }
             }
-            None => (self.cwd.clone(), git::walk_files(&self.cwd, 50_000)),
         }
+        let files = git::walk_files(&root, 50_000);
+        (root, files)
     }
 
     fn project_find_file(&mut self) {
@@ -587,7 +605,7 @@ impl Editor {
     }
 
     fn project_open(&mut self, rel: &str) {
-        let root = self.proj_root.clone().unwrap_or_else(|| self.cwd.clone());
+        let root = self.search_root.clone().unwrap_or_else(|| self.cwd.clone());
         let p = root.join(rel);
         self.find_file(&p.to_string_lossy());
     }

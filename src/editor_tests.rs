@@ -289,6 +289,8 @@ fn selecting_home_directory_updates_spc_x_search_root() {
     std::fs::create_dir(&hidden_child).unwrap();
     std::fs::create_dir(&config_dir).unwrap();
     std::fs::create_dir(&config_hidden_child).unwrap();
+    std::fs::write(selected.join("workspace.txt"), "outside selected base\n").unwrap();
+    std::fs::write(selected_child.join("child.txt"), "inside selected base\n").unwrap();
 
     let mut e = editor_in(&initial);
     e.start_prompt(Prompt::new(
@@ -328,11 +330,21 @@ fn selecting_home_directory_updates_spc_x_search_root() {
     assert_eq!(e.cwd, selected);
     assert!(matches!(e.buf().kind, BufKind::Dired));
 
+    keys(&mut e, "SPC f");
+    let Mode::Prompt(prompt) = &e.mode else {
+        panic!("SPC f should open the project file picker");
+    };
+    let choices = prompt.choices.as_ref().unwrap();
+    assert!(choices.contains(&"child.txt".to_string()));
+    assert!(!choices.contains(&"workspace.txt".to_string()));
+    keys(&mut e, "ESC");
+
     keys(&mut e, "SPC x");
     let Mode::Prompt(prompt) = &e.mode else {
         panic!("SPC x should continue using the selected workspace root");
     };
     let choices = prompt.choices.as_ref().unwrap();
+    assert!(choices.contains(&selected_child.display().to_string()));
     assert!(choices.contains(&config_dir.display().to_string()));
     assert!(choices.contains(&nested_child.display().to_string()));
     assert!(!choices.contains(&initial_child.display().to_string()));
@@ -884,6 +896,29 @@ fn vim_linewise_count_and_gg_g() {
     assert_eq!(e.buf().cursor.line, 1);
 }
 
+#[test]
+fn vim_j_and_k_preserve_the_desired_column() {
+    let dir = tmpdir("vim-vertical-column");
+    let mut e = editor_in(&dir);
+    e.buf_mut().set_text("012345\n12\n012345\n012345");
+    e.vim_mode = VimMode::Normal;
+    e.buf_mut().cursor = Pos::new(0, 4);
+    e.buf_mut().goal = Some(0);
+
+    keys(&mut e, "j");
+    assert_eq!(e.buf().cursor, Pos::new(1, 2));
+    keys(&mut e, "j");
+    assert_eq!(e.buf().cursor, Pos::new(2, 4));
+    keys(&mut e, "k");
+    assert_eq!(e.buf().cursor, Pos::new(1, 2));
+    keys(&mut e, "k");
+    assert_eq!(e.buf().cursor, Pos::new(0, 4));
+
+    keys(&mut e, "l j j");
+    assert_eq!(e.buf().cursor, Pos::new(2, 5));
+    std::fs::remove_dir_all(dir).ok();
+}
+
 
 #[test]
 fn vim_repeat_last_insert_replays_inserted_text() {
@@ -994,6 +1029,38 @@ fn vim_leader_f_matches_project_find_file() {
     e.vim_mode = VimMode::Normal;
     keys(&mut e, "SPC b m");
     assert!(e.vim_pending.is_empty(), "pending: {:?}", e.vim_pending);
+}
+
+#[test]
+fn project_search_uses_working_subdirectory_inside_git_repository() {
+    let root = tmpdir("project-search-git-subdir");
+    let selected = root.join("selected");
+    std::fs::create_dir(&selected).unwrap();
+    std::fs::write(selected.join("inside.txt"), "needle inside\n").unwrap();
+    std::fs::write(root.join("outside.txt"), "needle outside\n").unwrap();
+    let _repo = git2::Repository::init(&root).unwrap();
+
+    let mut e = editor_in(&selected);
+    let outside_index = e.open_path(&root.join("outside.txt")).unwrap();
+    e.switch_to(outside_index);
+    e.vim_mode = VimMode::Normal;
+
+    keys(&mut e, "SPC f");
+    let Mode::Prompt(prompt) = &e.mode else {
+        panic!("SPC f should open the project file picker");
+    };
+    let choices = prompt.choices.as_ref().unwrap();
+    assert!(choices.contains(&"inside.txt".to_string()));
+    assert!(!choices.contains(&"outside.txt".to_string()));
+    keys(&mut e, "ESC");
+
+    keys(&mut e, "SPC SPC needle RET");
+    let Mode::Prompt(prompt) = &e.mode else {
+        panic!("grep results should open as a selection popup");
+    };
+    assert!(prompt.matches.iter().any(|result| result.starts_with("inside.txt:")));
+    assert!(!prompt.matches.iter().any(|result| result.starts_with("outside.txt:")));
+    std::fs::remove_dir_all(root).ok();
 }
 
 #[test]

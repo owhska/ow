@@ -2,6 +2,12 @@
 
 impl Editor {
     pub fn handle_vim_key(&mut self, key: Key) -> bool {
+        let is_vertical = (self.buf().kind == BufKind::Dired || self.vim_mode != VimMode::Insert)
+            && matches!(key.name.as_str(), "j" | "k" | "<up>" | "<down>");
+        if !is_vertical {
+            self.vim_goal_col = None;
+            self.buf_mut().goal = None;
+        }
         if self.buf().kind == BufKind::Dired {
             let n = key.name.as_str();
             if n == ":" {
@@ -100,11 +106,11 @@ impl Editor {
 
                 // --- Vim-style navigation ---
                 "j" | "<down>" => {
-                    self.next_line();
+                    self.vim_move_vertical(true);
                     return true;
                 }
                 "k" | "<up>" => {
-                    self.previous_line();
+                    self.vim_move_vertical(false);
                     return true;
                 }
                 "l" | "<right>" | "RET" => {
@@ -422,6 +428,23 @@ impl Editor {
     }
 
     // -------------------------------------------------------- Visual Mode
+    fn vim_move_vertical(&mut self, down: bool) {
+        let cursor = self.buf().cursor;
+        if self.vim_goal_col.is_none() {
+            self.buf_mut().goal = None;
+        }
+        let goal = *self.vim_goal_col.get_or_insert(cursor.col);
+        let last_line = self.buf().lines.len().saturating_sub(1);
+        let line = if down {
+            cursor.line.saturating_add(1).min(last_line)
+        } else {
+            cursor.line.saturating_sub(1)
+        };
+        let buffer = self.buf_mut();
+        buffer.cursor.line = line;
+        buffer.cursor.col = goal.min(buffer.line_len(line));
+    }
+
     fn handle_vim_visual(&mut self, key: Key) -> bool {
         let n = key.name.as_str();
 
@@ -500,11 +523,11 @@ impl Editor {
                 return true;
             }
             "j" | "<down>" => {
-                self.next_line();
+                self.vim_move_vertical(true);
                 return true;
             }
             "k" | "<up>" => {
-                self.previous_line();
+                self.vim_move_vertical(false);
                 return true;
             }
             "l" | "<right>" => {
@@ -1276,11 +1299,11 @@ impl Editor {
                 return true;
             }
             "j" | "<down>" => {
-                for _ in 0..count { self.next_line(); }
+                for _ in 0..count { self.vim_move_vertical(true); }
                 return true;
             }
             "k" | "<up>" => {
-                for _ in 0..count { self.previous_line(); }
+                for _ in 0..count { self.vim_move_vertical(false); }
                 return true;
             }
             "l" | "<right>" => {

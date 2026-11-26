@@ -630,6 +630,7 @@ pub struct Editor {
     pub project_tree_open: bool,
     pub project_tree_focused: bool,
     pub vim_mode: VimMode,
+    vim_goal_col: Option<usize>,
     pub last_click: Option<(Instant, usize, usize)>,
     pub vim_pending: String,
     pub vim_op: Option<char>,
@@ -669,6 +670,7 @@ pub struct Editor {
     pub auto_indent: bool,
     pub cwd: PathBuf,
     pub proj_root: Option<PathBuf>,
+    search_root: Option<PathBuf>,
     pub last_search: String,
     pub last_search_forward: bool,
     pub recent_files: Vec<PathBuf>,
@@ -737,6 +739,7 @@ impl Editor {
             project_tree_open: false,
             project_tree_focused: false,
             vim_mode: VimMode::Normal,
+            vim_goal_col: None,
             last_click: None,
             vim_pending: String::new(),
             vim_op: None,
@@ -777,6 +780,7 @@ impl Editor {
             auto_indent: true,
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             proj_root: None,
+            search_root: None,
             last_search: String::new(),
             last_search_forward: true,
             recent_files: Vec::new(),
@@ -847,6 +851,7 @@ impl Editor {
 
     pub fn switch_to(&mut self, idx: usize) {
         if idx != self.cur {
+            self.vim_goal_col = None;
             self.prev_cur = Some(self.cur);
             self.search_highlight = None;
         }
@@ -2357,10 +2362,12 @@ impl Editor {
     fn handle_vim_page_key(&mut self, name: &str) -> bool {
         match name {
             "C-b" | "C-u" => {
+                self.vim_goal_col = None;
                 self.scroll_up();
                 true
             }
             "C-d" => {
+                self.vim_goal_col = None;
                 self.scroll_down();
                 true
             }
@@ -2369,6 +2376,7 @@ impl Editor {
     }
 
     pub fn on_paste(&mut self, s: &str) {
+        self.vim_goal_col = None;
         let s = s.replace("\r\n", "\n").replace('\r', "\n");
         match &mut self.mode {
             Mode::Prompt(p) => {
@@ -2397,6 +2405,7 @@ impl Editor {
         use ratatui::crossterm::event::{MouseButton, MouseEventKind};
         use ratatui::layout::Rect;
 
+        self.vim_goal_col = None;
         if self.screen_w == 0 || self.screen_h <= 1 {
             return;
         }
@@ -2943,7 +2952,7 @@ impl Editor {
                     self.save_current(Some(p));
                 }
             }
-            PKind::Switch | PKind::SelectDirectory => {
+            PKind::Switch => {
                 if let Some(i) = self.bufs.iter().position(|b| b.name == value) {
                     self.switch_to(i);
                 } else {
@@ -2957,6 +2966,29 @@ impl Editor {
                     }
                 }
             }
+            PKind::SelectDirectory => {
+                if let Some(i) = self.bufs.iter().position(|b| b.name == value) {
+                    self.switch_to(i);
+                    if self.buf().kind == BufKind::Dired {
+                        self.search_root = self.buf().path.clone();
+                    }
+                } else {
+                    let path = self.norm_path(value.trim());
+                    match std::fs::canonicalize(&path) {
+                        Ok(path) if path.is_dir() => {
+                            self.open_dir(&path);
+                            if self.buf().kind == BufKind::Dired
+                                && self.buf().path.as_deref() == Some(path.as_path())
+                            {
+                                self.search_root = Some(path.clone());
+                                self.say(format!("Search base: {}", path.display()));
+                            }
+                        }
+                        _ if path.exists() => self.find_file(value.trim()),
+                        _ => self.say(format!("No such path: {value}")),
+                    }
+                }
+            }
             PKind::WorkspaceDirectory => {
                 let path = self.norm_path(value.trim());
                 match std::fs::canonicalize(&path) {
@@ -2967,6 +2999,7 @@ impl Editor {
                         {
                             self.cwd = path.clone();
                             self.proj_root = None;
+                            self.search_root = Some(path.clone());
                             self.say(format!("Base directory: {}", path.display()));
                         }
                     }
