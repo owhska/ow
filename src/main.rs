@@ -11,6 +11,7 @@ mod syntax;
 mod ui;
 
 use editor::Editor;
+use ratatui::crossterm::cursor::SetCursorStyle;
 use ratatui::crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
 };
@@ -142,10 +143,20 @@ fn main() -> io::Result<()> {
     ed.refresh_marks();
 
     let mut term = ratatui::init();
-    let _ = execute!(io::stdout(), EnableBracketedPaste, EnableMouseCapture);
+    let _ = execute!(
+        io::stdout(),
+        SetCursorStyle::SteadyBlock,
+        EnableBracketedPaste,
+        EnableMouseCapture
+    );
     let res = run(&mut term, &mut ed);
     ed.save_session();
-    let _ = execute!(io::stdout(), DisableBracketedPaste, DisableMouseCapture);
+    let _ = execute!(
+        io::stdout(),
+        SetCursorStyle::DefaultUserShape,
+        DisableBracketedPaste,
+        DisableMouseCapture
+    );
     ratatui::restore();
     res
 }
