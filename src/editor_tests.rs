@@ -284,6 +284,7 @@ fn selecting_home_directory_updates_spc_x_search_root() {
         let Mode::Prompt(prompt) = &e.mode else {
             panic!("SPC x should open the directory picker");
         };
+        assert!(matches!(&prompt.kind, PKind::SelectDirectory));
         let choices = prompt.choices.as_ref().unwrap();
         assert!(choices.contains(&selected_child.display().to_string()));
         assert!(choices.contains(&config_dir.display().to_string()));

@@ -29,6 +29,7 @@ pub enum PKind {
     ProjFile,
     ProjGrep,
     ProjGrepResults { root: PathBuf, entries: Vec<(String, LineMeta)> },
+    SelectDirectory,
     QrFrom,
     QrTo(String),
     SearchHistory,
@@ -2934,7 +2935,7 @@ impl Editor {
                     self.save_current(Some(p));
                 }
             }
-            PKind::Switch => {
+            PKind::Switch | PKind::SelectDirectory => {
                 if let Some(i) = self.bufs.iter().position(|b| b.name == value) {
                     self.switch_to(i);
                 } else {

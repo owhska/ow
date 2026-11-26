@@ -725,7 +725,7 @@ impl Editor {
         self.bufs[grep_index].cursor = Pos::new(2, 0);
         self.switch_to(previous_buffer);
         let choices = popup_entries.iter().map(|(label, _)| label.clone()).collect();
-        let label = format!("Grep /{pat}/ ({count} matches in {nfiles} files): ");
+        let label = format!("Grep {count} in {nfiles} files: ");
         self.start_prompt(Prompt::new(
             &label,
             PKind::ProjGrepResults { root, entries: popup_entries },

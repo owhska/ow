@@ -2280,7 +2280,7 @@ impl Editor {
 
     pub fn vim_select_directory(&mut self) {
         let root = self.cwd.clone();
-        self.select_directory_from(&root, PKind::Switch, "Select directory: ");
+        self.select_directory_from(&root, PKind::SelectDirectory, "Select directory: ");
     }
 
     pub fn vim_select_home_directory(&mut self) {
