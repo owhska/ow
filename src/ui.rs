@@ -296,6 +296,16 @@ fn render_window(
         let mut overlays: Vec<(usize, usize, Style)> = Vec::new();
         let line_length = line.chars().count();
 
+        if kind == BufKind::GitDiff {
+            if line.starts_with("@@") {
+                overlays.push((0, line_length, bold()));
+            } else if (line.starts_with('+') && !line.starts_with("+++"))
+                || (line.starts_with('-') && !line.starts_with("---"))
+            {
+                overlays.push((0, 1, bold()));
+            }
+        }
+
         if let Some((start, end)) = selection {
             if line_index >= start.line && line_index <= end.line {
                 if editor.vim_mode == VimMode::VisualLine {
@@ -1285,6 +1295,33 @@ mod tests {
 
         assert_eq!(styles[snippet_start + 4].bg, Some(c(WARN)));
         assert_ne!(styles[snippet_start + 3].bg, Some(c(WARN)));
+    }
+
+    #[test]
+    fn git_diff_emphasizes_change_markers_and_hunk_headers() {
+        let mut editor = Editor::new();
+        editor.buf_mut().kind = BufKind::GitDiff;
+        editor
+            .buf_mut()
+            .set_text("+++ b/file\n@@ -1 +1 @@\n+added\n-removed\n context");
+        let area = Rect::new(0, 0, 40, 6);
+        let mut frame = ratatui::buffer::Buffer::empty(area);
+        let mut cursor_position = None;
+
+        render_window(
+            &mut frame,
+            &mut editor,
+            &Window::new(0, 0),
+            area,
+            true,
+            None,
+            &mut cursor_position,
+        );
+
+        assert!(frame[(0, 1)].style().add_modifier.contains(Modifier::BOLD));
+        assert!(frame[(0, 2)].style().add_modifier.contains(Modifier::BOLD));
+        assert!(!frame[(1, 2)].style().add_modifier.contains(Modifier::BOLD));
+        assert!(frame[(0, 3)].style().add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]
