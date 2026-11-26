@@ -2089,25 +2089,6 @@ impl Editor {
         self.completion.clear();
     }
 
-    fn accept_completion(&mut self) -> bool {
-        let Some((start, end)) = self.completion.range else {
-            return false;
-        };
-        let Some(candidate) = self.completion.items.get(self.completion.selected).cloned() else {
-            return false;
-        };
-        if self.completion.preview.is_some() {
-            self.completion.clear();
-            return true;
-        }
-        let buffer = self.buf_mut();
-        buffer.delete(start, end);
-        buffer.cursor = buffer.insert(start, &candidate);
-        buffer.mark_active = false;
-        self.completion.clear();
-        true
-    }
-
     fn update_completion(&mut self) {
         if self.completion.preview.is_some() {
             return;

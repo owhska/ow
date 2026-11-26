@@ -52,7 +52,7 @@ fn special_styles(
                 } else if line.trim_start().starts_with('?') {
                     c(ERROR)
                 } else {
-                    c(WARN)
+                    git_unstaged_color()
                 };
 
                 paint(0, length, fg(color));
@@ -409,7 +409,7 @@ fn render_window(
 
                     let (character, style) = match mark {
                         MARK_ADDED => ("▎", fg(c(INFO))),
-                        MARK_MODIFIED => ("▎", fg(c(WARN))),
+                        MARK_MODIFIED => ("▎", fg(git_unstaged_color())),
                         MARK_DELETED => ("▁", fg(c(ERROR))),
                         _ => (" ", Style::default()),
                     };

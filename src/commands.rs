@@ -966,7 +966,7 @@ impl Editor {
         t.push_str("VIM — INSERT MODE\n");
         t.push_str("  ESC                 return to Normal mode\n");
         t.push_str("  TAB / S-TAB         preview next / previous; otherwise indent / unindent\n");
-        t.push_str("  RET                 accept completion, or newline with auto-indent\n");
+        t.push_str("  RET                 insert newline with auto-indent\n");
         t.push_str("  ESC                 cancel completion and return to Normal mode\n");
         t.push_str("  Auto-pairs: parentheses, braces, brackets, quotes and angle brackets\n\n");
 

@@ -83,7 +83,7 @@ fn insert_completion_uses_project_source_files() {
 
     assert!(e.completion.items.contains(&"project_context_helper".to_string()));
     keys(&mut e, "RET");
-    assert_eq!(e.buf().lines[0], "project_context_helper");
+    assert_eq!(e.buf().lines, vec!["project_con", ""]);
 }
 
 #[test]
@@ -98,8 +98,20 @@ fn python_completion_includes_editor_builtins_without_file_context() {
     keys(&mut e, "pri");
 
     assert!(e.completion.items.contains(&"print".to_string()));
+}
+
+#[test]
+fn insert_completion_enter_inserts_newline_without_accepting() {
+    let dir = tmpdir("completion-enter-newline");
+    let mut e = editor_in(&dir);
+    e.buf_mut().kind = BufKind::File;
+    keys(&mut e, "pri");
+    assert!(!e.completion.items.is_empty());
+
     keys(&mut e, "RET");
-    assert_eq!(e.buf().lines[0], "print");
+
+    assert_eq!(e.buf().lines, vec!["pri", ""]);
+    assert_eq!(e.buf().cursor, Pos::new(1, 0));
 }
 
 #[test]
@@ -146,6 +158,7 @@ fn insert_completion_can_choose_another_local_suggestion() {
     keys(&mut e, "RET");
 
     assert_eq!(e.buf().lines[1], "project_context_candy");
+    assert_eq!(e.buf().lines[2], "");
 }
 
 #[test]

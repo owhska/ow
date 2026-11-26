@@ -172,7 +172,7 @@ impl Editor {
     fn handle_vim_insert(&mut self, key: Key) -> bool {
         let n = key.name.as_str();
         if self.vim_recording_insert && !matches!(n, "ESC" | "C-[")
-            && !(matches!(n, "TAB" | "S-TAB" | "RET") && !self.completion.items.is_empty())
+            && !(matches!(n, "TAB" | "S-TAB") && !self.completion.items.is_empty())
             && (key.ch.is_some() || matches!(n, "SPC" | "RET" | "DEL" | "TAB" | "S-TAB"))
         {
             self.vim_insert_record.push(key.clone());
@@ -218,9 +218,6 @@ impl Editor {
                     return true;
                 }
                 "RET" => {
-                    if self.accept_completion() {
-                        return true;
-                    }
                     self.newline_indent();
                     return true;
                 }
@@ -259,9 +256,6 @@ impl Editor {
                 return true;
             }
             "RET" => {
-                if self.accept_completion() {
-                    return true;
-                }
                 self.newline_indent();
                 return true;
             }

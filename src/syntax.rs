@@ -197,6 +197,14 @@ pub mod palette {
             c(WARN)
         }
     }
+
+    pub fn git_unstaged_color() -> Color {
+        if super::is_solar_theme() {
+            super::rgb(179, 107, 0)
+        } else {
+            c(WARN)
+        }
+    }
 }
 
 const CUSTOM: &str = "ow";
@@ -886,7 +894,7 @@ fn conv(s: SyStyle) -> Style {
     if s.font_style.contains(FontStyle::BOLD) {
         st = st.add_modifier(Modifier::BOLD);
     }
-    if s.font_style.contains(FontStyle::ITALIC) {
+    if is_solar_theme() && s.font_style.contains(FontStyle::ITALIC) {
         st = st.add_modifier(Modifier::ITALIC);
     }
     if s.font_style.contains(FontStyle::UNDERLINE) {
@@ -965,12 +973,6 @@ mod tests {
         assert!(theme.scopes.iter().any(|item| {
             item.style.foreground == Some(syntect::highlighting::Color { r: 0, g: 128, b: 0, a: 255 })
         }));
-        let italic = SyStyle {
-            foreground: syntect::highlighting::Color { r: 96, g: 96, b: 96, a: 255 },
-            background: syntect::highlighting::Color { r: 0, g: 0, b: 0, a: 255 },
-            font_style: FontStyle::ITALIC,
-        };
-        assert!(conv(italic).add_modifier.contains(Modifier::ITALIC));
     }
 
     #[test]
