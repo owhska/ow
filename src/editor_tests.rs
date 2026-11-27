@@ -1328,6 +1328,37 @@ fn run_command_streams_output_and_opens_results() {
 }
 
 #[test]
+fn run_command_uses_the_spc_x_workspace_directory() {
+    let initial = tmpdir("run-workspace-initial");
+    let selected = tmpdir("run-workspace-selected");
+    let mut e = editor_in(&initial);
+
+    e.start_prompt(Prompt::new(
+        "Workspace: ",
+        PKind::WorkspaceDirectory,
+        Some(vec![selected.display().to_string()]),
+    ));
+    keys(&mut e, "RET");
+    e.run("run");
+    keys(&mut e, "pwd RET");
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !e.buf().lines.iter().any(|line| line.starts_with("Process exited"))
+        && Instant::now() < deadline
+    {
+        e.tick();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    assert!(e.buf().lines.iter().any(|line| {
+        line == &format!("Directory: {}", selected.display())
+    }));
+    assert!(e.buf().lines.iter().any(|line| line == &selected.display().to_string()));
+    std::fs::remove_dir_all(initial).ok();
+    std::fs::remove_dir_all(selected).ok();
+}
+
+#[test]
 fn run_command_can_be_stopped_with_control_c_twice() {
     let dir = tmpdir("stop-run-command");
     let mut e = editor_in(&dir);

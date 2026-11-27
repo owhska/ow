@@ -748,7 +748,9 @@ impl Editor {
         }
 
         self.run_command = command.to_string();
-        let root = if self.buf().kind == BufKind::Dired {
+        let root = if let Some(root) = self.active_workspace_root() {
+            root.to_path_buf()
+        } else if self.buf().kind == BufKind::Dired {
             self.buf().path.clone().unwrap_or_else(|| self.cwd.clone())
         } else {
             self.proj_root
