@@ -871,6 +871,16 @@ fn vim_leader_keybindings() {
 }
 
 #[test]
+fn leader_t_requests_an_interactive_terminal() {
+    let mut e = Editor::new();
+
+    keys(&mut e, "SPC t");
+
+    assert!(e.terminal_requested);
+    assert!(e.vim_pending.is_empty());
+}
+
+#[test]
 fn leader_window_move_swaps_the_current_pane_position() {
     let dir = tmpdir("window-move");
     let left_file = dir.join("left.txt");

@@ -88,12 +88,44 @@ fn run(term: &mut DefaultTerminal, ed: &mut Editor) -> io::Result<()> {
                     Event::Resize(_, _) => redraw = true,
                     _ => {}
                 }
-                if ed.quit || !event::poll(Duration::ZERO)? {
+                if ed.quit || ed.terminal_requested || !event::poll(Duration::ZERO)? {
                     break;
                 }
             }
         }
+        if ed.terminal_requested {
+            ed.terminal_requested = false;
+            run_terminal(term, ed);
+            redraw = true;
+        }
         redraw |= ed.tick();
+    }
+}
+
+fn run_terminal(term: &mut DefaultTerminal, ed: &mut Editor) {
+    ratatui::restore();
+
+    #[cfg(windows)]
+    let shell = std::env::var_os("COMSPEC").unwrap_or_else(|| "cmd.exe".into());
+    #[cfg(not(windows))]
+    let shell = std::env::var_os("SHELL").unwrap_or_else(|| "/bin/sh".into());
+
+    let result = std::process::Command::new(shell)
+        .current_dir(ed.workspace_root())
+        .status();
+
+    *term = ratatui::init();
+    let _ = execute!(
+        io::stdout(),
+        SetCursorStyle::SteadyBlock,
+        EnableBracketedPaste,
+        EnableMouseCapture
+    );
+
+    match result {
+        Ok(status) if status.success() => ed.say("Terminal closed"),
+        Ok(status) => ed.say(format!("Terminal exited with status {status}")),
+        Err(error) => ed.say(format!("Could not open terminal: {error}")),
     }
 }
 
