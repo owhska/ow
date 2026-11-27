@@ -297,7 +297,14 @@ fn render_window(
         let line_length = line.chars().count();
 
         if kind == BufKind::GitDiff {
-            if line.starts_with("@@") {
+            if let Some(paths) = line.strip_prefix("diff --git ") {
+                let path_start = line_length - paths.chars().count();
+                overlays.push((
+                    path_start,
+                    line_length,
+                    fg(c(TYPE)).add_modifier(Modifier::BOLD),
+                ));
+            } else if line.starts_with("@@") {
                 overlays.push((0, line_length, bold()));
             } else if (line.starts_with('+') && !line.starts_with("+++"))
                 || (line.starts_with('-') && !line.starts_with("---"))
@@ -1322,6 +1329,34 @@ mod tests {
         assert!(frame[(0, 2)].style().add_modifier.contains(Modifier::BOLD));
         assert!(!frame[(1, 2)].style().add_modifier.contains(Modifier::BOLD));
         assert!(frame[(0, 3)].style().add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn git_diff_emphasizes_changed_file_names() {
+        let mut editor = Editor::new();
+        editor.buf_mut().kind = BufKind::GitDiff;
+        editor
+            .buf_mut()
+            .set_text("diff --git a/src/file.rs b/src/file.rs\n");
+        let area = Rect::new(0, 0, 50, 4);
+        let mut frame = ratatui::buffer::Buffer::empty(area);
+        let mut cursor_position = None;
+
+        render_window(
+            &mut frame,
+            &mut editor,
+            &Window::new(0, 0),
+            area,
+            true,
+            None,
+            &mut cursor_position,
+        );
+
+        for column in [11, 25] {
+            let style = frame[(column, 0)].style();
+            assert_eq!(style.fg, Some(c(TYPE)));
+            assert!(style.add_modifier.contains(Modifier::BOLD));
+        }
     }
 
     #[test]
