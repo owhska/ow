@@ -501,6 +501,10 @@ impl Editor {
                 self.copy_to_system_clipboard();
                 return true;
             }
+            "p" | "P" if self.vim_mode != VimMode::VisualBlock => {
+                self.vim_replace_visual_selection();
+                return true;
+            }
             ">" => {
                 self.vim_shift_visual_indent(true);
                 return true;
@@ -577,7 +581,25 @@ impl Editor {
             _ => {}
         }
 
-        false
+        true
+    }
+
+    fn vim_replace_visual_selection(&mut self) {
+        let text = match self.vim_register.take() {
+            Some(reg) if matches!(reg, '+' | '*') => crate::clipboard::get_clipboard(),
+            Some(reg) => self.vim_registers.get(&reg).cloned(),
+            None => crate::clipboard::get_clipboard()
+                .or_else(|| self.kill_ring.last().cloned())
+                .or_else(|| self.vim_registers.get(&'0').cloned()),
+        };
+        let Some(text) = text else {
+            self.say("Register is empty");
+            return;
+        };
+
+        self.delete_visual_selection();
+        self.insert_yank(&text);
+        self.vim_mode = VimMode::Normal;
     }
 
     fn vim_shift_visual_indent(&mut self, right: bool) {

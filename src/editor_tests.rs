@@ -866,6 +866,43 @@ fn vim_visual_mode_and_move_lines() {
     std::fs::remove_dir_all(dir).ok();
 }
 
+#[test]
+fn vim_visual_paste_replaces_selection_without_falling_through() {
+    let dir = tmpdir("vim-visual-paste");
+    let mut e = editor_in(&dir);
+    e.buf_mut().set_text("alpha beta\nsecond\nthird");
+    e.vim_mode = VimMode::Normal;
+    e.buf_mut().cursor = Pos::new(0, 0);
+
+    keys(&mut e, "v l y");
+    assert_eq!(crate::clipboard::get_clipboard().as_deref(), Some("al"));
+    e.buf_mut().cursor = Pos::new(0, 6);
+    keys(&mut e, "v l p");
+    assert_eq!(e.buf().lines[0], "alpha alta");
+    assert_eq!(e.vim_mode, VimMode::Normal);
+
+    e.buf_mut().cursor = Pos::new(0, 0);
+    keys(&mut e, "v z");
+    assert_eq!(e.buf().lines[0], "alpha alta");
+    assert_eq!(e.vim_mode, VimMode::Visual);
+    keys(&mut e, "ESC");
+
+    e.buf_mut().set_text("one\ntwo\nthree");
+    e.buf_mut().cursor = Pos::new(0, 0);
+    keys(&mut e, "V y");
+    e.buf_mut().cursor = Pos::new(1, 0);
+    keys(&mut e, "V p");
+    assert_eq!(e.buf().lines, vec!["one", "one", "three"]);
+    assert_eq!(e.vim_mode, VimMode::Normal);
+
+    e.buf_mut().cursor = Pos::new(1, 0);
+    keys(&mut e, "V z");
+    assert_eq!(e.buf().lines, vec!["one", "one", "three"]);
+    assert_eq!(e.vim_mode, VimMode::VisualLine);
+
+    std::fs::remove_dir_all(dir).ok();
+}
+
 
 #[test]
 fn vim_counts_operators_and_text_objects() {
