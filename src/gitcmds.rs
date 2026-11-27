@@ -253,9 +253,10 @@ impl Editor {
                     ));
                     m.push(LineMeta::Commit(c.id.clone()));
                 }
+                let repo_root = git::workdir(&repo).unwrap_or_else(|| self.workspace_root());
                 let name = match &rel {
-                    Some(r) => format!("*git-log: {r}*"),
-                    None => "*git-log*".to_string(),
+                    Some(r) => format!("*git-log: {}: {r}*", repo_root.display()),
+                    None => format!("*git-log: {}*", repo_root.display()),
                 };
                 self.open_special(&name, BufKind::GitLog, &t, m, false);
             }
@@ -620,11 +621,12 @@ impl Editor {
     }
 
     fn git_init(&mut self) {
-        match git2::Repository::init(&self.cwd) {
+        let root = self.workspace_root();
+        match git2::Repository::init(&root) {
             Ok(r) => {
                 self.proj_root = git::workdir(&r);
                 self.refresh_git_info();
-                self.say(format!("Initialized git repository in {}", self.cwd.display()));
+                self.say(format!("Initialized git repository in {}", root.display()));
             }
             Err(e) => self.gerr("init", e),
         }
@@ -632,7 +634,12 @@ impl Editor {
 
     // ----------------------------------------------------------- project
     fn project_root_and_files(&mut self) -> (PathBuf, Vec<String>) {
-        let root = self.search_root.clone().unwrap_or_else(|| self.cwd.clone());
+        let root = self
+            .active_search_root()
+            .map(Path::to_path_buf)
+            .or_else(|| self.active_workspace_root().map(Path::to_path_buf))
+            .or_else(|| self.search_root.clone())
+            .unwrap_or_else(|| self.cwd.clone());
         if let Some(repo) = git::open(&root) {
             if let Some(repo_root) = git::workdir(&repo) {
                 if let Ok(relative_root) = root.strip_prefix(&repo_root) {
@@ -671,7 +678,12 @@ impl Editor {
     }
 
     fn project_open(&mut self, rel: &str) {
-        let root = self.search_root.clone().unwrap_or_else(|| self.cwd.clone());
+        let root = self
+            .active_search_root()
+            .map(Path::to_path_buf)
+            .or_else(|| self.active_workspace_root().map(Path::to_path_buf))
+            .or_else(|| self.search_root.clone())
+            .unwrap_or_else(|| self.cwd.clone());
         let p = root.join(rel);
         self.find_file(&p.to_string_lossy());
     }

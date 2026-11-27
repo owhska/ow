@@ -207,6 +207,8 @@ pub struct Window {
     pub cursor: Pos,
     pub top: usize,
     pub left: usize,
+    pub workspace_root: Option<PathBuf>,
+    pub search_root: Option<PathBuf>,
 }
 
 impl Window {
@@ -217,6 +219,8 @@ impl Window {
             cursor: Pos::default(),
             top: 0,
             left: 0,
+            workspace_root: None,
+            search_root: None,
         }
     }
 }
@@ -853,7 +857,7 @@ impl Editor {
             s.to_string()
         };
         let p = PathBuf::from(&s);
-        let p = if p.is_absolute() { p } else { self.cwd.join(p) };
+        let p = if p.is_absolute() { p } else { self.workspace_root().join(p) };
         if let Ok(c) = std::fs::canonicalize(&p) {
             return c;
         }
@@ -1252,6 +1256,8 @@ impl Editor {
                 cursor: cur.cursor,
                 top: cur.top,
                 left: cur.left,
+                workspace_root: cur.workspace_root,
+                search_root: cur.search_root,
             };
             self.windows.push(new_win);
             self.win_tree.split(self.active_win_id, new_id, dir);
@@ -1879,6 +1885,9 @@ impl Editor {
 
     // ---------------------------------------------------------- git glue
     pub fn repo_here(&self) -> Option<git2::Repository> {
+        if let Some(root) = self.active_workspace_root() {
+            return git::open(root);
+        }
         let b = self.buf();
         if b.kind == BufKind::File {
             if let Some(p) = b.path.as_ref().and_then(|p| p.parent()) {
@@ -1893,6 +1902,26 @@ impl Editor {
             }
         }
         git::open(&self.cwd)
+    }
+
+    fn active_workspace_root(&self) -> Option<&Path> {
+        self.windows
+            .iter()
+            .find(|window| window.id == self.active_win_id)
+            .and_then(|window| window.workspace_root.as_deref())
+    }
+
+    fn active_search_root(&self) -> Option<&Path> {
+        self.windows
+            .iter()
+            .find(|window| window.id == self.active_win_id)
+            .and_then(|window| window.search_root.as_deref())
+    }
+
+    pub fn workspace_root(&self) -> PathBuf {
+        self.active_workspace_root()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| self.cwd.clone())
     }
 
     pub fn refresh_git_info(&mut self) {
@@ -2206,10 +2235,11 @@ impl Editor {
         let language = self.buf().hl.name.clone();
         let repo = self.repo_here();
         let root = self
-            .proj_root
-            .clone()
+            .active_workspace_root()
+            .map(Path::to_path_buf)
+            .or_else(|| self.proj_root.clone())
             .or_else(|| repo.as_ref().and_then(git::workdir))
-            .unwrap_or_else(|| self.cwd.clone());
+            .unwrap_or_else(|| self.workspace_root());
         let fresh = self.completion_project_root.as_ref() == Some(&root)
             && self.completion_project_language == language
             && self
@@ -2999,7 +3029,14 @@ impl Editor {
                 if let Some(i) = self.bufs.iter().position(|b| b.name == value) {
                     self.switch_to(i);
                     if self.buf().kind == BufKind::Dired {
-                        self.search_root = self.buf().path.clone();
+                        let path = self.buf().path.clone();
+                        if let Some(window) = self
+                            .windows
+                            .iter_mut()
+                            .find(|window| window.id == self.active_win_id)
+                        {
+                            window.search_root = path;
+                        }
                     }
                 } else {
                     let path = self.norm_path(value.trim());
@@ -3009,7 +3046,13 @@ impl Editor {
                             if self.buf().kind == BufKind::Dired
                                 && self.buf().path.as_deref() == Some(path.as_path())
                             {
-                                self.search_root = Some(path.clone());
+                                if let Some(window) = self
+                                    .windows
+                                    .iter_mut()
+                                    .find(|window| window.id == self.active_win_id)
+                                {
+                                    window.search_root = Some(path.clone());
+                                }
                                 self.say(format!("Search base: {}", path.display()));
                             }
                         }
@@ -3026,9 +3069,15 @@ impl Editor {
                         if self.buf().kind == BufKind::Dired
                             && self.buf().path.as_deref() == Some(path.as_path())
                         {
-                            self.cwd = path.clone();
-                            self.proj_root = None;
-                            self.search_root = Some(path.clone());
+                            if let Some(window) = self
+                                .windows
+                                .iter_mut()
+                                .find(|window| window.id == self.active_win_id)
+                            {
+                                window.workspace_root = Some(path.clone());
+                                window.search_root = None;
+                            }
+                            self.refresh_git_info();
                             self.say(format!("Base directory: {}", path.display()));
                         }
                     }

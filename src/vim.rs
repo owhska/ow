@@ -2324,7 +2324,7 @@ impl Editor {
     }
 
     pub fn vim_select_directory(&mut self) {
-        let root = self.cwd.clone();
+        let root = self.workspace_root();
         self.select_directory_from(&root, PKind::SelectDirectory, "Select directory: ");
     }
 
@@ -2348,10 +2348,11 @@ impl Editor {
         }
 
         let root = self
-            .proj_root
-            .clone()
+            .active_workspace_root()
+            .map(std::path::Path::to_path_buf)
+            .or_else(|| self.proj_root.clone())
             .or_else(|| self.repo_here().and_then(|repo| crate::git::workdir(&repo)))
-            .unwrap_or_else(|| self.cwd.clone());
+            .unwrap_or_else(|| self.workspace_root());
         self.open_project_tree(&root);
     }
 

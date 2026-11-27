@@ -300,7 +300,7 @@ fn selecting_home_directory_updates_spc_x_search_root() {
     ));
     keys(&mut e, "RET");
 
-    assert_eq!(e.cwd, selected);
+    assert_eq!(e.workspace_root(), selected);
     assert!(matches!(e.buf().kind, BufKind::Dired));
     assert_eq!(e.proj_root, None);
 
@@ -327,7 +327,7 @@ fn selecting_home_directory_updates_spc_x_search_root() {
         keys(&mut e, "TAB");
     }
     keys(&mut e, "RET");
-    assert_eq!(e.cwd, selected);
+    assert_eq!(e.workspace_root(), selected);
     assert!(matches!(e.buf().kind, BufKind::Dired));
 
     keys(&mut e, "SPC f");
@@ -351,6 +351,91 @@ fn selecting_home_directory_updates_spc_x_search_root() {
 
     std::fs::remove_dir_all(initial).ok();
     std::fs::remove_dir_all(selected).ok();
+}
+
+#[test]
+fn workspace_roots_and_git_logs_are_independent_per_window() {
+    let first = tmpdir("workspace-window-first");
+    let second = tmpdir("workspace-window-second");
+    let make_repo = |path: &std::path::Path, message: &str| {
+        let repo = git2::Repository::init(path).unwrap();
+        let mut config = repo.config().unwrap();
+        config.set_str("user.name", "Test").unwrap();
+        config.set_str("user.email", "test@example.com").unwrap();
+        std::fs::write(path.join("tracked.txt"), message).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("tracked.txt")).unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let signature = git2::Signature::now("Test", "test@example.com").unwrap();
+        repo.commit(Some("HEAD"), &signature, &signature, message, &tree, &[])
+            .unwrap();
+    };
+    make_repo(&first, "first-project-commit");
+    make_repo(&second, "second-project-commit");
+
+    let mut e = editor_in(&first);
+    e.vim_mode = VimMode::Normal;
+    e.split_window_right();
+    let first_window = e.active_win_id;
+    let second_window = e
+        .windows
+        .iter()
+        .find(|window| window.id != first_window)
+        .unwrap()
+        .id;
+
+    e.start_prompt(Prompt::new(
+        "Workspace: ",
+        PKind::WorkspaceDirectory,
+        Some(vec![first.display().to_string()]),
+    ));
+    keys(&mut e, "RET");
+    keys(&mut e, "SPC g l");
+    assert!(e
+        .buf()
+        .lines
+        .iter()
+        .any(|line| line.contains("first-project-commit")));
+
+    e.set_active_window(second_window);
+    e.start_prompt(Prompt::new(
+        "Workspace: ",
+        PKind::WorkspaceDirectory,
+        Some(vec![second.display().to_string()]),
+    ));
+    keys(&mut e, "RET");
+    keys(&mut e, "SPC g l");
+    assert!(e
+        .buf()
+        .lines
+        .iter()
+        .any(|line| line.contains("second-project-commit")));
+
+    let log_buffers: Vec<_> = e
+        .bufs
+        .iter()
+        .filter(|buffer| buffer.kind == BufKind::GitLog)
+        .collect();
+    assert_eq!(log_buffers.len(), 2);
+    assert!(log_buffers.iter().any(|buffer| {
+        buffer.name.contains(first.to_string_lossy().as_ref())
+            && buffer.lines.iter().any(|line| line.contains("first-project-commit"))
+    }));
+    assert!(log_buffers.iter().any(|buffer| {
+        buffer.name.contains(second.to_string_lossy().as_ref())
+            && buffer.lines.iter().any(|line| line.contains("second-project-commit"))
+    }));
+
+    e.set_active_window(first_window);
+    assert_eq!(e.workspace_root(), first);
+    assert!(e
+        .buf()
+        .lines
+        .iter()
+        .any(|line| line.contains("first-project-commit")));
+    std::fs::remove_dir_all(first).ok();
+    std::fs::remove_dir_all(second).ok();
 }
 
 #[test]
