@@ -1035,7 +1035,7 @@ impl Editor {
                 // <leader>t: :term
                 "SPC t" => {
                     self.vim_pending.clear();
-                    self.terminal_requested = true;
+                    self.open_terminal();
                     return true;
                 }
 

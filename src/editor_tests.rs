@@ -871,13 +871,39 @@ fn vim_leader_keybindings() {
 }
 
 #[test]
-fn leader_t_requests_an_interactive_terminal() {
+fn leader_t_opens_an_embedded_terminal_window() {
     let mut e = Editor::new();
 
     keys(&mut e, "SPC t");
 
-    assert!(e.terminal_requested);
+    assert!(e.terminal.is_some());
+    assert_eq!(e.windows.len(), 2);
+    assert_eq!(e.buf().kind, BufKind::Terminal);
     assert!(e.vim_pending.is_empty());
+
+    e.terminal.as_mut().unwrap().write(b"echo ow-terminal-ready\r").unwrap();
+    for _ in 0..100 {
+        let terminal = e.terminal.as_mut().unwrap();
+        terminal.update();
+        if terminal.screen().contents().contains("ow-terminal-ready") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(e.terminal.as_ref().unwrap().screen().contents().contains("ow-terminal-ready"));
+
+    keys(&mut e, "C-x o");
+    assert_ne!(e.buf().kind, BufKind::Terminal);
+    assert_eq!(e.windows.len(), 2);
+    assert!(e.terminal.is_some());
+
+    keys(&mut e, "C-x o");
+    assert_eq!(e.buf().kind, BufKind::Terminal);
+
+    keys(&mut e, "C-x 0");
+    assert_ne!(e.buf().kind, BufKind::Terminal);
+    assert_eq!(e.windows.len(), 1);
+    assert!(e.terminal.is_none());
 }
 
 #[test]

@@ -3,6 +3,7 @@ use crate::buffer::*;
 use crate::git;
 use crate::keys::{self, Key};
 use crate::syntax::Highlighter;
+use crate::terminal::EmbeddedTerminal;
 use ratatui::crossterm::event::KeyEvent;
 use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, BufReader};
@@ -669,7 +670,8 @@ pub struct Editor {
     pub msg: String,
     pub pending: Vec<String>,
     pub quit: bool,
-    pub terminal_requested: bool,
+    pub terminal: Option<EmbeddedTerminal>,
+    terminal_ctrl_x_pending: bool,
     pub text_h: usize,
     pub text_w: usize,
     pub git: Option<git::Info>,
@@ -783,7 +785,8 @@ impl Editor {
             msg: String::new(),
             pending: Vec::new(),
             quit: false,
-            terminal_requested: false,
+            terminal: None,
+            terminal_ctrl_x_pending: false,
             text_h: 24,
             text_w: 80,
             git: None,
@@ -1226,6 +1229,7 @@ impl Editor {
         if next_id == self.active_win_id {
             return;
         }
+        self.terminal_ctrl_x_pending = false;
         self.sync_active_win_from_buf();
         if let Some(w) = self.windows.iter().find(|w| w.id == next_id) {
             let b_idx = w.buf_idx;
@@ -1272,6 +1276,99 @@ impl Editor {
 
     pub fn split_window_right(&mut self) {
         self.split_window(SplitDir::Vertical);
+    }
+
+    pub fn open_terminal(&mut self) {
+        let terminal_buffer = self
+            .bufs
+            .iter()
+            .position(|buffer| buffer.kind == BufKind::Terminal);
+
+        if self.terminal.as_ref().is_none_or(EmbeddedTerminal::is_exited) {
+            match EmbeddedTerminal::spawn(&self.workspace_root()) {
+                Ok(terminal) => self.terminal = Some(terminal),
+                Err(error) => {
+                    self.say(format!("Could not open terminal: {error}"));
+                    return;
+                }
+            }
+        }
+
+        let terminal_buffer = terminal_buffer.unwrap_or_else(|| {
+            let mut buffer = Buffer::new("*terminal*");
+            buffer.kind = BufKind::Terminal;
+            buffer.read_only = true;
+            self.bufs.push(buffer);
+            self.bufs.len() - 1
+        });
+
+        if let Some(window_id) = self
+            .windows
+            .iter()
+            .find(|window| window.buf_idx == terminal_buffer)
+            .map(|window| window.id)
+        {
+            self.set_active_window(window_id);
+            return;
+        }
+
+        self.split_window_below();
+        let terminal_window_id = self.next_win_id - 1;
+        if let Some(window) = self
+            .windows
+            .iter_mut()
+            .find(|window| window.id == terminal_window_id)
+        {
+            window.buf_idx = terminal_buffer;
+            window.cursor = Pos::default();
+            window.top = 0;
+            window.left = 0;
+        }
+        self.set_active_window(terminal_window_id);
+    }
+
+    fn close_terminal(&mut self) {
+        if self.windows.len() > 1 {
+            self.delete_window();
+        } else {
+            let scratch = self
+                .bufs
+                .iter()
+                .position(|buffer| buffer.name == "*scratch*" && buffer.kind == BufKind::File)
+                .unwrap_or_else(|| {
+                    self.bufs.push(Buffer::new("*scratch*"));
+                    self.bufs.len() - 1
+                });
+            self.switch_to(scratch);
+        }
+        self.terminal = None;
+        self.terminal_ctrl_x_pending = false;
+    }
+
+    fn switch_terminal_focus(&mut self) {
+        let target = if self.buf().kind == BufKind::Terminal {
+            self.windows
+                .iter()
+                .find(|window| {
+                    self.bufs
+                        .get(window.buf_idx)
+                        .is_some_and(|buffer| buffer.kind != BufKind::Terminal)
+                })
+                .map(|window| window.id)
+        } else {
+            self.windows
+                .iter()
+                .find(|window| {
+                    self.bufs
+                        .get(window.buf_idx)
+                        .is_some_and(|buffer| buffer.kind == BufKind::Terminal)
+                })
+                .map(|window| window.id)
+        };
+        if let Some(window_id) = target {
+            self.set_active_window(window_id);
+            self.terminal_ctrl_x_pending = false;
+        }
     }
 
     pub fn move_current_window(&mut self, direction: char) {
@@ -1323,6 +1420,14 @@ impl Editor {
     }
 
     pub fn other_window(&mut self) {
+        if self.windows.iter().any(|window| {
+            self.bufs
+                .get(window.buf_idx)
+                .is_some_and(|buffer| buffer.kind == BufKind::Terminal)
+        }) {
+            self.switch_terminal_focus();
+            return;
+        }
         let leaves = self.win_tree.leaves();
         if leaves.len() <= 1 {
             return;
@@ -2028,6 +2133,13 @@ impl Editor {
         redraw |= self.poll_git_operation();
         redraw |= self.update_git_operation_status();
         redraw |= self.update_run_elapsed();
+        if let Some(terminal) = &mut self.terminal {
+            let (changed, message) = terminal.update();
+            redraw |= changed;
+            if let Some(message) = message {
+                self.say(message);
+            }
+        }
         let b = self.buf();
         if self.git_op_rx.is_none()
             && b.kind == BufKind::File
@@ -2059,6 +2171,38 @@ impl Editor {
             return;
         }
         let Some(key) = keys::parse(&ev) else { return };
+        if self.buf().kind == BufKind::Terminal {
+            if self.terminal_ctrl_x_pending {
+                self.terminal_ctrl_x_pending = false;
+                match key.name.as_str() {
+                    "0" => {
+                        self.close_terminal();
+                        return;
+                    }
+                    "o" => {
+                        self.switch_terminal_focus();
+                        return;
+                    }
+                    _ => {
+                        if let Some(terminal) = &mut self.terminal {
+                            if let Err(error) = terminal.write(&[0x18]) {
+                                self.say(format!("Could not write to terminal: {error}"));
+                                return;
+                            }
+                        }
+                    }
+                }
+            } else if key.name == "C-x" {
+                self.terminal_ctrl_x_pending = true;
+                return;
+            }
+            if let Some(terminal) = &mut self.terminal {
+                if let Err(error) = terminal.send_key(&key) {
+                    self.say(format!("Could not write to terminal: {error}"));
+                }
+            }
+            return;
+        }
         if self.completion.preview.is_some()
             && !matches!(key.name.as_str(), "TAB" | "S-TAB" | "RET" | "ESC" | "C-[")
         {
@@ -2432,6 +2576,14 @@ impl Editor {
 
     pub fn on_paste(&mut self, s: &str) {
         if self.git_op_rx.is_some() {
+            return;
+        }
+        if self.buf().kind == BufKind::Terminal {
+            if let Some(terminal) = &mut self.terminal {
+                if let Err(error) = terminal.paste(s) {
+                    self.say(format!("Could not paste into terminal: {error}"));
+                }
+            }
             return;
         }
         self.vim_goal_col = None;

@@ -140,7 +140,7 @@ Normal-mode macro recording (`q{register}` / `@{register}`) is intentionally not
 | `SPC z` | Toggle the left project-tree sidebar; expand directories and open files in new windows on the right |
 | `SPC TAB` | Next buffer |
 | `SPC S-TAB` | Previous buffer |
-| `SPC t` | Reserved |
+| `SPC t` | Open an interactive terminal in a pane below |
 | `SPC w w` | Save buffer |
 | `SPC w q` | Close focused window; quit if it is the last window |
 | `SPC q` | Close buffer |
@@ -150,6 +150,7 @@ Normal-mode macro recording (`q{register}` / `@{register}`) is intentionally not
 | `SPC w h/j/k/l` | Switch window focus |
 | `SPC r r` | Query-replace word under cursor |
 | `SPC ←/→/↑/↓` | Resize window split |
+| `C-x o` | Switch focus between the terminal and editor panes when a terminal is open |
 | `SPC x` | Select directory |
 | `SPC X` | Select directory from home and set it as workspace root |
 

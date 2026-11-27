@@ -993,7 +993,9 @@ impl Editor {
         t.push_str("  SPC SPC             grep in project\n");
         t.push_str("  SPC e               file explorer (Dired)\n");
         t.push_str("  SPC z               toggle left project-tree sidebar (RET expands; files open in new windows)\n");
-        t.push_str("  SPC t               open an interactive terminal\n");
+        t.push_str("  SPC t               open an embedded terminal below\n");
+        t.push_str("  C-x o               switch between terminal and editor panes\n");
+        t.push_str("  C-x 0               close the terminal pane\n");
         t.push_str("  SPC s               search forward in buffer\n");
         t.push_str("  SPC x               select directory\n");
         t.push_str("  SPC X               select directory from home and set workspace root\n");

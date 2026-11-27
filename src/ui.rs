@@ -211,6 +211,76 @@ fn paint_line(
     }
 }
 
+fn terminal_color(color: vt100::Color) -> Color {
+    match color {
+        vt100::Color::Default => Color::Reset,
+        vt100::Color::Idx(index) => Color::Indexed(index),
+        vt100::Color::Rgb(red, green, blue) => Color::Rgb(red, green, blue),
+    }
+}
+
+fn render_terminal_window(
+    frame_buffer: &mut ratatui::buffer::Buffer,
+    editor: &Editor,
+    rect: Rect,
+    is_active: bool,
+    cursor_position: &mut Option<(u16, u16)>,
+) {
+    let Some(terminal) = &editor.terminal else { return };
+    let screen = terminal.screen();
+    let text_height = rect.height.saturating_sub(1);
+
+    for row in 0..text_height {
+        for col in 0..rect.width {
+            let Some(cell) = screen.cell(row, col) else { continue };
+            if cell.is_wide_continuation() {
+                continue;
+            }
+            let mut style = Style::default()
+                .fg(terminal_color(cell.fgcolor()))
+                .bg(terminal_color(cell.bgcolor()));
+            if cell.bold() {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+            if cell.dim() {
+                style = style.add_modifier(Modifier::DIM);
+            }
+            if cell.italic() {
+                style = style.add_modifier(Modifier::ITALIC);
+            }
+            if cell.underline() {
+                style = style.add_modifier(Modifier::UNDERLINED);
+            }
+            if cell.inverse() {
+                style = style.add_modifier(Modifier::REVERSED);
+            }
+            let contents = if cell.has_contents() {
+                cell.contents()
+            } else {
+                " "
+            };
+            frame_buffer.set_string(rect.x + col, rect.y + row, contents, style);
+        }
+    }
+
+    let mode_line_y = rect.y + rect.height - 1;
+    let mode_style = status_line_style(is_active);
+    frame_buffer.set_string(rect.x, mode_line_y, " ".repeat(rect.width as usize), mode_style);
+    frame_buffer.set_string(
+        rect.x,
+        mode_line_y,
+        " *terminal*  C-x o: switch pane | C-x 0: close",
+        mode_style,
+    );
+
+    if is_active && !screen.hide_cursor() {
+        let (row, col) = screen.cursor_position();
+        if row < text_height && col < rect.width {
+            *cursor_position = Some((rect.x + col, rect.y + row));
+        }
+    }
+}
+
 fn render_window(
     frame_buffer: &mut ratatui::buffer::Buffer,
     editor: &mut Editor,
@@ -221,6 +291,17 @@ fn render_window(
     cursor_position: &mut Option<(u16, u16)>,
 ) {
     if window.buf_idx >= editor.bufs.len() {
+        return;
+    }
+    if editor.bufs[window.buf_idx].kind == BufKind::Terminal {
+        let resize_error = editor
+            .terminal
+            .as_mut()
+            .and_then(|terminal| terminal.resize(rect.width, rect.height.saturating_sub(1)).err());
+        if let Some(error) = resize_error {
+            editor.say(format!("Could not resize terminal: {error}"));
+        }
+        render_terminal_window(frame_buffer, editor, rect, is_active, cursor_position);
         return;
     }
 
