@@ -907,6 +907,31 @@ fn leader_t_opens_an_embedded_terminal_window() {
 }
 
 #[test]
+fn terminal_exit_closes_its_window_and_returns_focus_to_editor() {
+    let mut e = Editor::new();
+    keys(&mut e, "SPC t");
+    assert!(e.terminal.is_some());
+    keys(&mut e, "C-x o");
+
+    e.terminal
+        .as_mut()
+        .unwrap()
+        .write(b"exit\r")
+        .unwrap();
+    for _ in 0..100 {
+        e.tick();
+        if e.terminal.is_none() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    assert!(e.terminal.is_none());
+    assert_eq!(e.windows.len(), 1);
+    assert_ne!(e.buf().kind, BufKind::Terminal);
+}
+
+#[test]
 fn leader_window_move_swaps_the_current_pane_position() {
     let dir = tmpdir("window-move");
     let left_file = dir.join("left.txt");

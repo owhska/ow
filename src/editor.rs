@@ -1284,7 +1284,17 @@ impl Editor {
             .iter()
             .position(|buffer| buffer.kind == BufKind::Terminal);
 
-        if self.terminal.as_ref().is_none_or(EmbeddedTerminal::is_exited) {
+        let terminal_exited = match self.terminal.as_mut() {
+            Some(terminal) => match terminal.is_exited() {
+                Ok(exited) => exited,
+                Err(error) => {
+                    self.say(format!("Could not check terminal process: {error}"));
+                    true
+                }
+            },
+            None => true,
+        };
+        if terminal_exited {
             match EmbeddedTerminal::spawn(&self.workspace_root()) {
                 Ok(terminal) => self.terminal = Some(terminal),
                 Err(error) => {
@@ -1328,18 +1338,30 @@ impl Editor {
     }
 
     fn close_terminal(&mut self) {
-        if self.windows.len() > 1 {
-            self.delete_window();
-        } else {
-            let scratch = self
-                .bufs
-                .iter()
-                .position(|buffer| buffer.name == "*scratch*" && buffer.kind == BufKind::File)
-                .unwrap_or_else(|| {
-                    self.bufs.push(Buffer::new("*scratch*"));
-                    self.bufs.len() - 1
-                });
-            self.switch_to(scratch);
+        let terminal_window = self
+            .windows
+            .iter()
+            .find(|window| {
+                self.bufs
+                    .get(window.buf_idx)
+                    .is_some_and(|buffer| buffer.kind == BufKind::Terminal)
+            })
+            .map(|window| window.id);
+        if let Some(window_id) = terminal_window {
+            self.set_active_window(window_id);
+            if self.windows.len() > 1 {
+                self.delete_window();
+            } else {
+                let scratch = self
+                    .bufs
+                    .iter()
+                    .position(|buffer| buffer.name == "*scratch*" && buffer.kind == BufKind::File)
+                    .unwrap_or_else(|| {
+                        self.bufs.push(Buffer::new("*scratch*"));
+                        self.bufs.len() - 1
+                    });
+                self.switch_to(scratch);
+            }
         }
         self.terminal = None;
         self.terminal_ctrl_x_pending = false;
@@ -2133,12 +2155,27 @@ impl Editor {
         redraw |= self.poll_git_operation();
         redraw |= self.update_git_operation_status();
         redraw |= self.update_run_elapsed();
-        if let Some(terminal) = &mut self.terminal {
+        let mut terminal_message = None;
+        let terminal_exited = if let Some(terminal) = &mut self.terminal {
             let (changed, message) = terminal.update();
             redraw |= changed;
-            if let Some(message) = message {
-                self.say(message);
+            terminal_message = message;
+            match terminal.is_exited() {
+                Ok(exited) => exited,
+                Err(error) => {
+                    terminal_message = Some(format!("Could not check terminal process: {error}"));
+                    true
+                }
             }
+        } else {
+            false
+        };
+        if let Some(message) = terminal_message {
+            self.say(message);
+        }
+        if terminal_exited {
+            self.close_terminal();
+            redraw = true;
         }
         let b = self.buf();
         if self.git_op_rx.is_none()
